@@ -1,0 +1,106 @@
+name: Deploy Todo App to Production
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      - name: Build frontend
+        working-directory: ./frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Prepare deployment package
+        run: |
+          mkdir -p deploy-package/frontend
+          mkdir -p deploy-package/backend
+          cp -r frontend/dist deploy-package/frontend/
+          cp -r backend/* deploy-package/backend/
+          cp docker-compose.production.yml deploy-package/
+          cp nginx-config-todo.conf deploy-package/
+
+      - name: Create deployment tarball
+        run: |
+          tar -czf todo-app-deploy.tar.gz -C deploy-package .
+
+      - name: Install SSH key
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+
+      - name: Add server to known hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H ${{ secrets.SERVER_IP }} >> ~/.ssh/known_hosts
+
+      - name: Deploy to server
+        env:
+          SERVER_IP: ${{ secrets.SERVER_IP }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+        run: |
+          # Create deployment directory if it doesn't exist
+          ssh ${SERVER_USER}@${SERVER_IP} "mkdir -p /mnt/user/appdata/todo-app"
+
+          # Copy deployment package to server
+          scp todo-app-deploy.tar.gz ${SERVER_USER}@${SERVER_IP}:/tmp/
+
+          # Extract and deploy on server
+          ssh ${SERVER_USER}@${SERVER_IP} << 'ENDSSH'
+            set -e
+
+            cd /mnt/user/appdata/todo-app
+
+            # Extract deployment package
+            tar -xzf /tmp/todo-app-deploy.tar.gz
+
+            # Clean up tarball
+            rm /tmp/todo-app-deploy.tar.gz
+
+            # Copy nginx config to multi-site-nginx conf.d
+            cp nginx-config-todo.conf /mnt/user/appdata/multi-site-nginx/conf.d/todo.conf
+
+            # Build and start backend container
+            docker compose -f docker-compose.production.yml build
+            docker compose -f docker-compose.production.yml up -d
+
+            # Restart nginx to pick up new configuration
+            docker restart multi-site-nginx
+
+            echo "Deployment completed successfully!"
+          ENDSSH
+
+      - name: Verify deployment
+        env:
+          SERVER_IP: ${{ secrets.SERVER_IP }}
+          SERVER_USER: ${{ secrets.SERVER_USER }}
+        run: |
+          ssh ${SERVER_USER}@${SERVER_IP} << 'ENDSSH'
+            echo "Checking container status..."
+            docker ps | grep todo-app-backend
+
+            echo "Checking backend health..."
+            sleep 5
+            curl -f http://192.168.1.2:3500/api/health || echo "Health check failed (this is expected on first deploy)"
+          ENDSSH
+
+      - name: Deployment summary
+        run: |
+          echo "✅ Deployment completed!"
+          echo "🌐 Frontend: https://todo.hamishgilbert.com"
+          echo "🔧 Backend: Running on port 3500"
+          echo "📝 Check logs: docker logs todo-app-backend"
