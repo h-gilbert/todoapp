@@ -17,7 +17,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '18'
+          node-version: '20'
 
       - name: Build frontend
         working-directory: ./frontend
@@ -75,8 +75,8 @@ jobs:
             cp nginx-config-todo.conf /mnt/user/appdata/multi-site-nginx/conf.d/todo.conf
 
             # Build and start backend container
-            docker compose -f docker-compose.production.yml build
-            docker compose -f docker-compose.production.yml up -d
+            docker-compose -f docker-compose.production.yml build
+            docker-compose -f docker-compose.production.yml up -d
 
             # Restart nginx to pick up new configuration
             docker restart multi-site-nginx
