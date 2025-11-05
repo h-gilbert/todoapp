@@ -5,6 +5,7 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const bcrypt = require('bcrypt');
+const crypto = require('crypto');
 const db = require('./database');
 
 const app = express();
@@ -31,14 +32,17 @@ const upload = multer({
   storage: storage,
   limits: { fileSize: 10 * 1024 * 1024 }, // 10MB limit
   fileFilter: (req, file, cb) => {
-    const allowedTypes = /jpeg|jpg|png|gif|webp/;
-    const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
-    const mimetype = allowedTypes.test(file.mimetype);
+    // Allow images and documents for bug reports and task attachments
+    const allowedExtensions = /jpeg|jpg|png|gif|webp|pdf|txt|log|md|json|xml|csv|zip|tar|gz/;
+    const allowedMimeTypes = /image\/.*|application\/pdf|text\/.*|application\/json|application\/xml|application\/zip|application\/x-tar|application\/gzip/;
+
+    const extname = allowedExtensions.test(path.extname(file.originalname).toLowerCase());
+    const mimetype = allowedMimeTypes.test(file.mimetype);
 
     if (mimetype && extname) {
       return cb(null, true);
     } else {
-      cb(new Error('Only image files are allowed!'));
+      cb(new Error('File type not allowed. Supported: images, PDF, text files, logs, JSON, XML, CSV, ZIP'));
     }
   }
 });
@@ -113,7 +117,57 @@ const dbAll = (sql, params = []) => {
   });
 };
 
+// Helper function to generate a secure API token
+const generateApiToken = () => {
+  return crypto.randomBytes(32).toString('hex');
+};
+
 // ============ MIDDLEWARE ============
+
+// Bearer token authentication middleware for API access
+const authenticateToken = async (req, res, next) => {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1]; // Bearer TOKEN
+
+  if (!token) {
+    // If no token provided, continue with regular authentication
+    // This allows existing username/password auth to work
+    return next();
+  }
+
+  try {
+    // Verify token exists and is valid
+    const tokenRecord = await dbGet(
+      'SELECT * FROM api_tokens WHERE token = ?',
+      [token]
+    );
+
+    if (!tokenRecord) {
+      return res.status(401).json({ error: 'Invalid API token' });
+    }
+
+    // Check if token has expired
+    if (tokenRecord.expires_at && new Date(tokenRecord.expires_at) < new Date()) {
+      return res.status(401).json({ error: 'API token has expired' });
+    }
+
+    // Update last used timestamp
+    await dbRun(
+      'UPDATE api_tokens SET last_used_at = CURRENT_TIMESTAMP WHERE id = ?',
+      [tokenRecord.id]
+    );
+
+    // Attach user info to request
+    req.userId = tokenRecord.user_id;
+    req.tokenScopes = tokenRecord.scopes.split(',');
+    req.authenticatedViaToken = true;
+
+    next();
+  } catch (error) {
+    console.error('Token authentication error:', error);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+};
 
 // Middleware to check if user has access to a project (owns it or it's shared with them)
 const checkProjectAccess = async (req, res, next) => {
@@ -264,6 +318,9 @@ const checkTaskAccess = async (req, res, next) => {
   }
 };
 
+// Apply token authentication middleware to all API routes
+app.use('/api', authenticateToken);
+
 // ============ USER ROUTES ============
 
 // Register new user
@@ -383,13 +440,104 @@ app.post('/api/users/change-password', async (req, res) => {
   }
 });
 
+// ============ API TOKEN ROUTES ============
+
+// Generate a new API token
+app.post('/api/users/:userId/tokens', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const { name, scopes, expiresInDays } = req.body;
+
+    if (!name) {
+      return res.status(400).json({ error: 'Token name is required' });
+    }
+
+    // Verify user exists
+    const user = await dbGet('SELECT * FROM users WHERE id = ?', [userId]);
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // Generate token
+    const token = generateApiToken();
+
+    // Set scopes (default to read if not specified)
+    const tokenScopes = scopes || 'read';
+
+    // Calculate expiration date if specified
+    let expiresAt = null;
+    if (expiresInDays) {
+      const expireDate = new Date();
+      expireDate.setDate(expireDate.getDate() + parseInt(expiresInDays));
+      expiresAt = expireDate.toISOString();
+    }
+
+    // Insert token
+    const result = await dbRun(
+      'INSERT INTO api_tokens (user_id, token, name, scopes, expires_at) VALUES (?, ?, ?, ?, ?)',
+      [userId, token, name, tokenScopes, expiresAt]
+    );
+
+    const tokenRecord = await dbGet('SELECT * FROM api_tokens WHERE id = ?', [result.lastID]);
+
+    res.json(tokenRecord);
+  } catch (error) {
+    console.error('Generate token error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Get all API tokens for a user
+app.get('/api/users/:userId/tokens', async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    const tokens = await dbAll(
+      'SELECT id, user_id, name, scopes, expires_at, last_used_at, created_at FROM api_tokens WHERE user_id = ? ORDER BY created_at DESC',
+      [userId]
+    );
+
+    // Don't return the actual token values for security
+    res.json(tokens);
+  } catch (error) {
+    console.error('Get tokens error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Revoke an API token
+app.delete('/api/tokens/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { userId } = req.body;
+
+    if (!userId) {
+      return res.status(400).json({ error: 'User ID is required' });
+    }
+
+    // Verify the token belongs to the user before deleting
+    const token = await dbGet('SELECT * FROM api_tokens WHERE id = ? AND user_id = ?', [id, userId]);
+
+    if (!token) {
+      return res.status(404).json({ error: 'Token not found or access denied' });
+    }
+
+    await dbRun('DELETE FROM api_tokens WHERE id = ?', [id]);
+
+    res.json({ success: true, message: 'Token revoked successfully' });
+  } catch (error) {
+    console.error('Delete token error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // ============ SEARCH ROUTES ============
 
 // Search across all projects, sections, and tasks for a user
 app.get('/api/users/:userId/search', async (req, res) => {
   try {
     const { userId } = req.params;
-    const { q } = req.query;
+    const { q, labelId } = req.query;
 
     if (!q || q.trim().length === 0) {
       return res.json([]);
@@ -397,9 +545,8 @@ app.get('/api/users/:userId/search', async (req, res) => {
 
     const searchTerm = `%${q}%`;
 
-    // Search tasks (title and description)
-    const taskResults = await dbAll(
-      `SELECT
+    // Build task query with optional filters
+    let taskQuery = `SELECT
         t.id as taskId,
         t.title as taskTitle,
         t.description,
@@ -410,16 +557,31 @@ app.get('/api/users/:userId/search', async (req, res) => {
         'task' as type
        FROM tasks t
        JOIN sections s ON t.section_id = s.id
-       JOIN projects p ON s.project_id = p.id
-       WHERE p.user_id = ?
+       JOIN projects p ON s.project_id = p.id`;
+
+    const taskParams = [userId, searchTerm, searchTerm];
+
+    // Add label filter if specified
+    if (labelId) {
+      taskQuery += ` JOIN task_labels tl ON t.id = tl.task_id`;
+    }
+
+    taskQuery += ` WHERE p.user_id = ?
          AND (t.title LIKE ? OR t.description LIKE ?)
          AND t.archived = 0
-         AND s.archived = 0
-       ORDER BY p.name, s.name, t.title`,
-      [userId, searchTerm, searchTerm]
-    );
+         AND s.archived = 0`;
 
-    // Search sections (name only)
+    // Add label filter if specified
+    if (labelId) {
+      taskQuery += ` AND tl.label_id = ?`;
+      taskParams.push(labelId);
+    }
+
+    taskQuery += ` ORDER BY p.name, s.name, t.title`;
+
+    const taskResults = await dbAll(taskQuery, taskParams);
+
+    // Search sections (name only) - no label filters for sections
     const sectionResults = await dbAll(
       `SELECT
         NULL as taskId,
@@ -452,7 +614,7 @@ app.get('/api/users/:userId/search', async (req, res) => {
 app.get('/api/projects/:projectId/search', async (req, res) => {
   try {
     const { projectId } = req.params;
-    const { q } = req.query;
+    const { q, labelId } = req.query;
 
     if (!q || q.trim().length === 0) {
       return res.json([]);
@@ -460,9 +622,8 @@ app.get('/api/projects/:projectId/search', async (req, res) => {
 
     const searchTerm = `%${q}%`;
 
-    // Search tasks within the project
-    const taskResults = await dbAll(
-      `SELECT
+    // Build task query with optional filters
+    let taskQuery = `SELECT
         t.id as taskId,
         t.title as taskTitle,
         t.description,
@@ -473,14 +634,29 @@ app.get('/api/projects/:projectId/search', async (req, res) => {
         'task' as type
        FROM tasks t
        JOIN sections s ON t.section_id = s.id
-       JOIN projects p ON s.project_id = p.id
-       WHERE p.id = ?
+       JOIN projects p ON s.project_id = p.id`;
+
+    const taskParams = [projectId, searchTerm, searchTerm];
+
+    // Add label filter if specified
+    if (labelId) {
+      taskQuery += ` JOIN task_labels tl ON t.id = tl.task_id`;
+    }
+
+    taskQuery += ` WHERE p.id = ?
          AND (t.title LIKE ? OR t.description LIKE ?)
          AND t.archived = 0
-         AND s.archived = 0
-       ORDER BY s.name, t.title`,
-      [projectId, searchTerm, searchTerm]
-    );
+         AND s.archived = 0`;
+
+    // Add label filter if specified
+    if (labelId) {
+      taskQuery += ` AND tl.label_id = ?`;
+      taskParams.push(labelId);
+    }
+
+    taskQuery += ` ORDER BY s.name, t.title`;
+
+    const taskResults = await dbAll(taskQuery, taskParams);
 
     // Search sections within the project
     const sectionResults = await dbAll(
@@ -918,14 +1094,31 @@ app.post('/api/sections/:id/unarchive', async (req, res) => {
 
 // ============ TASK ROUTES ============
 
-// Get all tasks for a section
+// Get all tasks for a section (excluding subtasks - they're fetched separately)
 app.get('/api/sections/:sectionId/tasks', async (req, res) => {
   try {
     const { sectionId } = req.params;
     const tasks = await dbAll(
-      'SELECT * FROM tasks WHERE section_id = ? AND archived = 0 ORDER BY order_index ASC',
+      'SELECT * FROM tasks WHERE section_id = ? AND archived = 0 AND parent_task_id IS NULL ORDER BY order_index ASC',
       [sectionId]
     );
+
+    // Add subtask count for each task
+    for (let task of tasks) {
+      const subtaskCount = await dbGet(
+        'SELECT COUNT(*) as count FROM tasks WHERE parent_task_id = ?',
+        [task.id]
+      );
+      task.subtask_count = subtaskCount.count;
+
+      // Also get completed subtask count for progress tracking
+      const completedSubtasks = await dbGet(
+        'SELECT COUNT(*) as count FROM tasks WHERE parent_task_id = ? AND completed = 1',
+        [task.id]
+      );
+      task.completed_subtask_count = completedSubtasks.count;
+    }
+
     res.json(tasks);
   } catch (error) {
     console.error('Get tasks error:', error);
@@ -936,10 +1129,22 @@ app.get('/api/sections/:sectionId/tasks', async (req, res) => {
 // Create a new task
 app.post('/api/tasks', async (req, res) => {
   try {
-    const { sectionId, title, description } = req.body;
+    const { sectionId, title, description, parent_task_id } = req.body;
 
     if (!sectionId || !title) {
       return res.status(400).json({ error: 'Section ID and title are required' });
+    }
+
+    // Validate parent_task_id if provided
+    if (parent_task_id) {
+      const parentTask = await dbGet('SELECT * FROM tasks WHERE id = ?', [parent_task_id]);
+      if (!parentTask) {
+        return res.status(400).json({ error: 'Parent task not found' });
+      }
+      // Prevent nesting beyond 2 levels (parent tasks cannot be subtasks)
+      if (parentTask.parent_task_id) {
+        return res.status(400).json({ error: 'Cannot create subtask of a subtask (max 2 levels)' });
+      }
     }
 
     const maxOrder = await dbGet(
@@ -949,11 +1154,18 @@ app.post('/api/tasks', async (req, res) => {
     const orderIndex = (maxOrder.max || 0) + 1;
 
     const result = await dbRun(
-      'INSERT INTO tasks (section_id, title, description, order_index) VALUES (?, ?, ?, ?)',
-      [sectionId, title, description || '', orderIndex]
+      'INSERT INTO tasks (section_id, title, description, parent_task_id, order_index) VALUES (?, ?, ?, ?, ?)',
+      [sectionId, title, description || '', parent_task_id || null, orderIndex]
     );
 
     const task = await dbGet('SELECT * FROM tasks WHERE id = ?', [result.lastID]);
+
+    // Get subtask count
+    const subtaskCount = await dbGet(
+      'SELECT COUNT(*) as count FROM tasks WHERE parent_task_id = ?',
+      [result.lastID]
+    );
+    task.subtask_count = subtaskCount.count;
 
     // Invalidate caches
     invalidateCache('tasks');
@@ -973,7 +1185,7 @@ app.post('/api/tasks', async (req, res) => {
 app.put('/api/tasks/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const { title, description, completed, programmatic_completion } = req.body;
+    const { title, description, completed, programmatic_completion, parent_task_id } = req.body;
 
     const updates = [];
     const params = [];
@@ -994,11 +1206,41 @@ app.put('/api/tasks/:id', async (req, res) => {
       updates.push('programmatic_completion = ?');
       params.push(programmatic_completion ? 1 : 0);
     }
+    if (parent_task_id !== undefined) {
+      // Validate parent_task_id if provided (allow null to remove parent)
+      if (parent_task_id !== null) {
+        const parentTask = await dbGet('SELECT * FROM tasks WHERE id = ?', [parent_task_id]);
+        if (!parentTask) {
+          return res.status(400).json({ error: 'Parent task not found' });
+        }
+        // Prevent nesting beyond 2 levels
+        if (parentTask.parent_task_id) {
+          return res.status(400).json({ error: 'Cannot create subtask of a subtask (max 2 levels)' });
+        }
+        // Prevent circular references (task cannot be its own parent)
+        if (parentTask.id == id) {
+          return res.status(400).json({ error: 'Task cannot be its own parent' });
+        }
+      }
+      updates.push('parent_task_id = ?');
+      params.push(parent_task_id);
+    }
+
+    if (updates.length === 0) {
+      return res.status(400).json({ error: 'No fields to update' });
+    }
 
     params.push(id);
 
     await dbRun(`UPDATE tasks SET ${updates.join(', ')} WHERE id = ?`, params);
     const task = await dbGet('SELECT * FROM tasks WHERE id = ?', [id]);
+
+    // Get subtask count
+    const subtaskCount = await dbGet(
+      'SELECT COUNT(*) as count FROM tasks WHERE parent_task_id = ?',
+      [id]
+    );
+    task.subtask_count = subtaskCount.count;
 
     // Invalidate task cache
     invalidateCache('tasks');
@@ -1006,6 +1248,103 @@ app.put('/api/tasks/:id', async (req, res) => {
     res.json(task);
   } catch (error) {
     console.error('Update task error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Get a single task by ID
+app.get('/api/tasks/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const task = await dbGet('SELECT * FROM tasks WHERE id = ?', [id]);
+    if (!task) {
+      return res.status(404).json({ error: 'Task not found' });
+    }
+
+    // Get subtask count
+    const subtaskCount = await dbGet(
+      'SELECT COUNT(*) as count FROM tasks WHERE parent_task_id = ?',
+      [id]
+    );
+    task.subtask_count = subtaskCount.count;
+
+    // Get completed subtask count
+    const completedSubtasks = await dbGet(
+      'SELECT COUNT(*) as count FROM tasks WHERE parent_task_id = ? AND completed = 1',
+      [id]
+    );
+    task.completed_subtask_count = completedSubtasks.count;
+
+    res.json(task);
+  } catch (error) {
+    console.error('Get task error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Get all subtasks for a task
+app.get('/api/tasks/:id/subtasks', async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Verify parent task exists
+    const parentTask = await dbGet('SELECT * FROM tasks WHERE id = ?', [id]);
+    if (!parentTask) {
+      return res.status(404).json({ error: 'Parent task not found' });
+    }
+
+    const subtasks = await dbAll(
+      'SELECT * FROM tasks WHERE parent_task_id = ? ORDER BY order_index ASC',
+      [id]
+    );
+
+    res.json(subtasks);
+  } catch (error) {
+    console.error('Get subtasks error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Create a subtask (shortcut endpoint)
+app.post('/api/tasks/:id/subtasks', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { title, description } = req.body;
+
+    if (!title) {
+      return res.status(400).json({ error: 'Title is required' });
+    }
+
+    // Verify parent task exists and is not itself a subtask
+    const parentTask = await dbGet('SELECT * FROM tasks WHERE id = ?', [id]);
+    if (!parentTask) {
+      return res.status(404).json({ error: 'Parent task not found' });
+    }
+    if (parentTask.parent_task_id) {
+      return res.status(400).json({ error: 'Cannot create subtask of a subtask (max 2 levels)' });
+    }
+
+    // Get max order for subtasks of this parent
+    const maxOrder = await dbGet(
+      'SELECT MAX(order_index) as max FROM tasks WHERE parent_task_id = ?',
+      [id]
+    );
+    const orderIndex = (maxOrder.max || 0) + 1;
+
+    const result = await dbRun(
+      'INSERT INTO tasks (section_id, title, description, parent_task_id, order_index) VALUES (?, ?, ?, ?, ?)',
+      [parentTask.section_id, title, description || '', id, orderIndex]
+    );
+
+    const subtask = await dbGet('SELECT * FROM tasks WHERE id = ?', [result.lastID]);
+
+    // Invalidate caches
+    invalidateCache('tasks');
+
+    res.json(subtask);
+  } catch (error) {
+    console.error('Create subtask error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
@@ -1238,6 +1577,172 @@ app.delete('/api/photos/:id', async (req, res) => {
     res.json({ success: true });
   } catch (error) {
     console.error('Delete photo error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ============ LABEL/TAG ROUTES ============
+
+// Get all labels for a user
+app.get('/api/users/:userId/labels', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const labels = await dbAll(
+      'SELECT * FROM labels WHERE user_id = ? ORDER BY name ASC',
+      [userId]
+    );
+    res.json(labels);
+  } catch (error) {
+    console.error('Get labels error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Create a new label
+app.post('/api/labels', async (req, res) => {
+  try {
+    const { userId, name, color } = req.body;
+
+    if (!userId || !name) {
+      return res.status(400).json({ error: 'User ID and name are required' });
+    }
+
+    const labelColor = color || '#3B82F6'; // Default blue
+
+    const result = await dbRun(
+      'INSERT INTO labels (user_id, name, color) VALUES (?, ?, ?)',
+      [userId, name, labelColor]
+    );
+
+    const label = await dbGet('SELECT * FROM labels WHERE id = ?', [result.lastID]);
+
+    res.json(label);
+  } catch (error) {
+    if (error.message.includes('UNIQUE constraint')) {
+      return res.status(400).json({ error: 'Label with this name already exists' });
+    }
+    console.error('Create label error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Update a label
+app.put('/api/labels/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name, color } = req.body;
+
+    const updates = [];
+    const params = [];
+
+    if (name !== undefined) {
+      updates.push('name = ?');
+      params.push(name);
+    }
+    if (color !== undefined) {
+      updates.push('color = ?');
+      params.push(color);
+    }
+
+    if (updates.length === 0) {
+      return res.status(400).json({ error: 'No fields to update' });
+    }
+
+    params.push(id);
+
+    await dbRun(`UPDATE labels SET ${updates.join(', ')} WHERE id = ?`, params);
+    const label = await dbGet('SELECT * FROM labels WHERE id = ?', [id]);
+
+    res.json(label);
+  } catch (error) {
+    if (error.message.includes('UNIQUE constraint')) {
+      return res.status(400).json({ error: 'Label with this name already exists' });
+    }
+    console.error('Update label error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Delete a label
+app.delete('/api/labels/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Delete label (task_labels will be cascade deleted)
+    await dbRun('DELETE FROM labels WHERE id = ?', [id]);
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Delete label error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Get all labels for a task (with label details)
+app.get('/api/tasks/:id/labels', async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const labels = await dbAll(
+      `SELECT l.* FROM labels l
+       INNER JOIN task_labels tl ON l.id = tl.label_id
+       WHERE tl.task_id = ?
+       ORDER BY l.name ASC`,
+      [id]
+    );
+
+    res.json(labels);
+  } catch (error) {
+    console.error('Get task labels error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Add a label to a task
+app.post('/api/tasks/:taskId/labels/:labelId', async (req, res) => {
+  try {
+    const { taskId, labelId } = req.params;
+
+    // Verify task and label exist
+    const task = await dbGet('SELECT * FROM tasks WHERE id = ?', [taskId]);
+    if (!task) {
+      return res.status(404).json({ error: 'Task not found' });
+    }
+
+    const label = await dbGet('SELECT * FROM labels WHERE id = ?', [labelId]);
+    if (!label) {
+      return res.status(404).json({ error: 'Label not found' });
+    }
+
+    // Add label to task
+    await dbRun(
+      'INSERT INTO task_labels (task_id, label_id) VALUES (?, ?)',
+      [taskId, labelId]
+    );
+
+    res.json({ success: true, label });
+  } catch (error) {
+    if (error.message.includes('UNIQUE constraint')) {
+      return res.status(400).json({ error: 'Label already added to this task' });
+    }
+    console.error('Add label to task error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Remove a label from a task
+app.delete('/api/tasks/:taskId/labels/:labelId', async (req, res) => {
+  try {
+    const { taskId, labelId } = req.params;
+
+    await dbRun(
+      'DELETE FROM task_labels WHERE task_id = ? AND label_id = ?',
+      [taskId, labelId]
+    );
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Remove label from task error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

@@ -10,6 +10,9 @@ export const useAppStore = defineStore('app', () => {
   const sections = ref([])
   const tasks = ref({})
   const photoCache = ref({})
+  const labels = ref([])
+  const taskLabels = ref({}) // taskId -> [labels]
+  const subtasks = ref({}) // parentTaskId -> [subtasks]
 
   // Initialize user from localStorage on store creation
   const savedUser = localStorage.getItem('todo_user')
@@ -268,17 +271,26 @@ export const useAppStore = defineStore('app', () => {
     tasks.value[sectionId] = await response.json()
   }
 
-  async function createTask(sectionId, title, description) {
+  async function createTask(sectionId, title, description, parent_task_id = null) {
     const response = await fetch(`${API_URL}/tasks`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sectionId, title, description })
+      body: JSON.stringify({ sectionId, title, description, parent_task_id })
     })
     const task = await response.json()
-    if (!tasks.value[sectionId]) {
-      tasks.value[sectionId] = []
+
+    // If this is a subtask, add to subtasks instead of main tasks
+    if (parent_task_id) {
+      if (!subtasks.value[parent_task_id]) {
+        subtasks.value[parent_task_id] = []
+      }
+      subtasks.value[parent_task_id].push(task)
+    } else {
+      if (!tasks.value[sectionId]) {
+        tasks.value[sectionId] = []
+      }
+      tasks.value[sectionId].push(task)
     }
-    tasks.value[sectionId].push(task)
 
     // Update project task count locally
     if (currentProject.value) {
@@ -566,6 +578,125 @@ export const useAppStore = defineStore('app', () => {
     return await response.json()
   }
 
+  // Label actions
+  async function loadLabels() {
+    if (!user.value) return
+    const response = await fetch(`${API_URL}/users/${user.value.id}/labels`)
+    labels.value = await response.json()
+  }
+
+  async function createLabel(name, color = '#3B82F6') {
+    const response = await fetch(`${API_URL}/labels`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: user.value.id, name, color })
+    })
+    const label = await response.json()
+    labels.value.push(label)
+    return label
+  }
+
+  async function updateLabel(id, updates) {
+    const response = await fetch(`${API_URL}/labels/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(updates)
+    })
+    const updated = await response.json()
+    const index = labels.value.findIndex(l => l.id === id)
+    if (index !== -1) {
+      labels.value[index] = updated
+    }
+    return updated
+  }
+
+  async function deleteLabel(id) {
+    await fetch(`${API_URL}/labels/${id}`, { method: 'DELETE' })
+    labels.value = labels.value.filter(l => l.id !== id)
+    // Also remove from all tasks
+    for (const taskId in taskLabels.value) {
+      taskLabels.value[taskId] = taskLabels.value[taskId].filter(l => l.id !== id)
+    }
+  }
+
+  async function getTaskLabels(taskId, forceRefresh = false) {
+    if (!forceRefresh && taskLabels.value[taskId]) {
+      return taskLabels.value[taskId]
+    }
+    const response = await fetch(`${API_URL}/tasks/${taskId}/labels`)
+    const taskLabelsList = await response.json()
+    taskLabels.value[taskId] = taskLabelsList
+    return taskLabelsList
+  }
+
+  async function addLabelToTask(taskId, labelId) {
+    const response = await fetch(`${API_URL}/tasks/${taskId}/labels/${labelId}`, {
+      method: 'POST'
+    })
+    const result = await response.json()
+    if (!taskLabels.value[taskId]) {
+      taskLabels.value[taskId] = []
+    }
+    taskLabels.value[taskId].push(result.label)
+    return result
+  }
+
+  async function removeLabelFromTask(taskId, labelId) {
+    await fetch(`${API_URL}/tasks/${taskId}/labels/${labelId}`, { method: 'DELETE' })
+    if (taskLabels.value[taskId]) {
+      taskLabels.value[taskId] = taskLabels.value[taskId].filter(l => l.id !== labelId)
+    }
+  }
+
+  // Subtask actions
+  async function loadSubtasks(parentTaskId, forceRefresh = false) {
+    if (!forceRefresh && subtasks.value[parentTaskId]) {
+      return subtasks.value[parentTaskId]
+    }
+    const response = await fetch(`${API_URL}/tasks/${parentTaskId}/subtasks`)
+    subtasks.value[parentTaskId] = await response.json()
+    return subtasks.value[parentTaskId]
+  }
+
+  async function createSubtask(parentTaskId, title, description) {
+    const response = await fetch(`${API_URL}/tasks/${parentTaskId}/subtasks`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title, description })
+    })
+    const subtask = await response.json()
+    if (!subtasks.value[parentTaskId]) {
+      subtasks.value[parentTaskId] = []
+    }
+    subtasks.value[parentTaskId].push(subtask)
+    return subtask
+  }
+
+  // Enhanced search with filters
+  async function searchWithFilters(query, labelId = null) {
+    if (!user.value || !query || query.trim().length === 0) return []
+
+    let url = `${API_URL}/users/${user.value.id}/search?q=${encodeURIComponent(query)}`
+    if (labelId) {
+      url += `&labelId=${labelId}`
+    }
+
+    const response = await fetch(url)
+    return await response.json()
+  }
+
+  async function searchProjectWithFilters(projectId, query, labelId = null) {
+    if (!query || query.trim().length === 0) return []
+
+    let url = `${API_URL}/projects/${projectId}/search?q=${encodeURIComponent(query)}`
+    if (labelId) {
+      url += `&labelId=${labelId}`
+    }
+
+    const response = await fetch(url)
+    return await response.json()
+  }
+
   return {
     user,
     projects,
@@ -573,6 +704,9 @@ export const useAppStore = defineStore('app', () => {
     sections,
     tasks,
     photoCache,
+    labels,
+    taskLabels,
+    subtasks,
     register,
     login,
     changePassword,
@@ -610,6 +744,17 @@ export const useAppStore = defineStore('app', () => {
     invalidatePhotoCache,
     shareProject,
     getProjectShares,
-    removeProjectShare
+    removeProjectShare,
+    loadLabels,
+    createLabel,
+    updateLabel,
+    deleteLabel,
+    getTaskLabels,
+    addLabelToTask,
+    removeLabelFromTask,
+    loadSubtasks,
+    createSubtask,
+    searchWithFilters,
+    searchProjectWithFilters
   }
 })

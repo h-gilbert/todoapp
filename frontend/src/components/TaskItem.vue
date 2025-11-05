@@ -18,6 +18,9 @@
         </div>
         <div v-if="photos.length > 3" class="photo-count">+{{ photos.length - 3 }}</div>
       </div>
+      <div v-if="task.subtask_count && task.subtask_count > 0" class="subtask-badge">
+        {{ task.completed_subtask_count || 0 }}/{{ task.subtask_count }}
+      </div>
     </div>
 
     <Teleport to="body">
@@ -71,8 +74,27 @@ async function handleToggle(event) {
   }
 }
 
-async function handleUpdate({ title, description }) {
+async function handleUpdate({ title, description, selectedLabels }) {
   await store.updateTask(props.task.id, { title, description })
+
+  // Update labels - get current labels and sync with selected
+  const currentLabels = await store.getTaskLabels(props.task.id, true)
+  const currentLabelIds = currentLabels.map(l => l.id)
+
+  // Add new labels
+  for (const labelId of selectedLabels) {
+    if (!currentLabelIds.includes(labelId)) {
+      await store.addLabelToTask(props.task.id, labelId)
+    }
+  }
+
+  // Remove deselected labels
+  for (const labelId of currentLabelIds) {
+    if (!selectedLabels.includes(labelId)) {
+      await store.removeLabelFromTask(props.task.id, labelId)
+    }
+  }
+
   showEditModal.value = false
 }
 
@@ -205,9 +227,16 @@ function handleModalClose() {
 .photo-count {
   font-size: 0.75rem;
   color: #636e72;
-  font-weight: 600;
+}
+
+.subtask-badge {
+  display: inline-block;
   padding: 0.25rem 0.5rem;
   background: #dfe6e9;
   border-radius: 12px;
+  font-size: 0.7rem;
+  color: #636e72;
+  font-weight: 600;
+  margin-top: 0.5rem;
 }
 </style>

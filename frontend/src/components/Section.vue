@@ -86,8 +86,16 @@ function updateTasks(newTasks) {
   store.tasks[props.section.id] = newTasks
 }
 
-async function handleCreateTask({ title, description }) {
-  await store.createTask(props.section.id, title, description)
+async function handleCreateTask({ title, description, selectedLabels }) {
+  const task = await store.createTask(props.section.id, title, description)
+
+  // Add labels to the new task if any were selected
+  if (selectedLabels && selectedLabels.length > 0) {
+    for (const labelId of selectedLabels) {
+      await store.addLabelToTask(task.id, labelId)
+    }
+  }
+
   showNewTaskModal.value = false
 }
 

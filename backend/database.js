@@ -129,6 +129,152 @@ db.serialize(() => {
     }
   });
 
+  // Migration: Remove type column from tasks (no longer needed)
+  // Check if type column exists and remove it if present
+  db.all(`PRAGMA table_info(tasks)`, (err, columns) => {
+    if (err) {
+      console.error('Error checking tasks table structure:', err);
+      return;
+    }
+
+    const hasTypeColumn = columns && columns.some(col => col.name === 'type');
+
+    if (hasTypeColumn) {
+      console.log('Type column found in tasks table, removing it...');
+
+      // SQLite doesn't support DROP COLUMN, so we need to recreate the table
+      db.serialize(() => {
+        // Step 1: Create new table without type column
+        db.run(`
+          CREATE TABLE IF NOT EXISTS tasks_new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            section_id INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            description TEXT,
+            order_index INTEGER NOT NULL DEFAULT 0,
+            completed BOOLEAN DEFAULT 0,
+            programmatic_completion BOOLEAN DEFAULT 0,
+            archived BOOLEAN DEFAULT 0,
+            parent_task_id INTEGER REFERENCES tasks(id) ON DELETE CASCADE,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (section_id) REFERENCES sections(id) ON DELETE CASCADE
+          )
+        `, (err) => {
+          if (err) {
+            console.error('Error creating tasks_new table:', err);
+            return;
+          }
+
+          // Step 2: Copy data from old table (excluding type column)
+          db.run(`
+            INSERT INTO tasks_new (id, section_id, title, description, order_index, completed, programmatic_completion, archived, parent_task_id, created_at)
+            SELECT id, section_id, title, description, order_index, completed, programmatic_completion, archived, parent_task_id, created_at
+            FROM tasks
+          `, (err) => {
+            if (err) {
+              console.error('Error copying data to tasks_new:', err);
+              return;
+            }
+
+            // Step 3: Drop old table
+            db.run(`DROP TABLE tasks`, (err) => {
+              if (err) {
+                console.error('Error dropping old tasks table:', err);
+                return;
+              }
+
+              // Step 4: Rename new table
+              db.run(`ALTER TABLE tasks_new RENAME TO tasks`, (err) => {
+                if (err) {
+                  console.error('Error renaming tasks_new to tasks:', err);
+                  return;
+                }
+
+                console.log('Successfully removed type column from tasks table');
+
+                // Recreate necessary indexes (they were dropped with the old table)
+                db.run(`CREATE INDEX IF NOT EXISTS idx_tasks_section_id ON tasks(section_id)`);
+                db.run(`CREATE INDEX IF NOT EXISTS idx_tasks_archived ON tasks(archived)`);
+                db.run(`CREATE INDEX IF NOT EXISTS idx_tasks_completed ON tasks(completed)`);
+                db.run(`CREATE INDEX IF NOT EXISTS idx_tasks_section_archived ON tasks(section_id, archived)`);
+                db.run(`CREATE INDEX IF NOT EXISTS idx_tasks_title ON tasks(title)`);
+                db.run(`CREATE INDEX IF NOT EXISTS idx_tasks_parent_task_id ON tasks(parent_task_id)`);
+              });
+            });
+          });
+        });
+      });
+    }
+  });
+
+  // Migration: Add parent_task_id for subtasks support (2-level nesting)
+  db.run(`ALTER TABLE tasks ADD COLUMN parent_task_id INTEGER REFERENCES tasks(id) ON DELETE CASCADE`, (err) => {
+    if (err && !err.message.includes('duplicate column')) {
+      console.error('Migration error:', err);
+    } else if (!err) {
+      console.log('Added parent_task_id column to tasks table');
+    }
+  });
+
+  // Create labels table for task tagging
+  db.run(`
+    CREATE TABLE IF NOT EXISTS labels (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      color TEXT NOT NULL DEFAULT '#3B82F6',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      UNIQUE(user_id, name)
+    )
+  `, (err) => {
+    if (err) {
+      console.error('Error creating labels table:', err);
+    } else {
+      console.log('Labels table created successfully');
+    }
+  });
+
+  // Create task_labels junction table (many-to-many)
+  db.run(`
+    CREATE TABLE IF NOT EXISTS task_labels (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      task_id INTEGER NOT NULL,
+      label_id INTEGER NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+      FOREIGN KEY (label_id) REFERENCES labels(id) ON DELETE CASCADE,
+      UNIQUE(task_id, label_id)
+    )
+  `, (err) => {
+    if (err) {
+      console.error('Error creating task_labels table:', err);
+    } else {
+      console.log('Task_labels table created successfully');
+    }
+  });
+
+  // Create api_tokens table for programmatic access (Claude Code integration)
+  db.run(`
+    CREATE TABLE IF NOT EXISTS api_tokens (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      token TEXT UNIQUE NOT NULL,
+      name TEXT NOT NULL,
+      scopes TEXT NOT NULL DEFAULT 'read',
+      expires_at DATETIME,
+      last_used_at DATETIME,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )
+  `, (err) => {
+    if (err) {
+      console.error('Error creating api_tokens table:', err);
+    } else {
+      console.log('API tokens table created successfully');
+    }
+  });
+
   // Create performance indexes for faster queries
   // Index for filtering projects by user
   db.run(`CREATE INDEX IF NOT EXISTS idx_projects_user_id ON projects(user_id)`, (err) => {
@@ -186,6 +332,34 @@ db.serialize(() => {
 
   db.run(`CREATE INDEX IF NOT EXISTS idx_project_shares_user_id ON project_shares(user_id)`, (err) => {
     if (err) console.error('Error creating idx_project_shares_user_id:', err);
+  });
+
+  // Indexes for parent_task_id (for subtasks)
+  db.run(`CREATE INDEX IF NOT EXISTS idx_tasks_parent_task_id ON tasks(parent_task_id)`, (err) => {
+    if (err) console.error('Error creating idx_tasks_parent_task_id:', err);
+  });
+
+  // Indexes for labels table
+  db.run(`CREATE INDEX IF NOT EXISTS idx_labels_user_id ON labels(user_id)`, (err) => {
+    if (err) console.error('Error creating idx_labels_user_id:', err);
+  });
+
+  // Indexes for task_labels junction table
+  db.run(`CREATE INDEX IF NOT EXISTS idx_task_labels_task_id ON task_labels(task_id)`, (err) => {
+    if (err) console.error('Error creating idx_task_labels_task_id:', err);
+  });
+
+  db.run(`CREATE INDEX IF NOT EXISTS idx_task_labels_label_id ON task_labels(label_id)`, (err) => {
+    if (err) console.error('Error creating idx_task_labels_label_id:', err);
+  });
+
+  // Indexes for api_tokens table
+  db.run(`CREATE INDEX IF NOT EXISTS idx_api_tokens_user_id ON api_tokens(user_id)`, (err) => {
+    if (err) console.error('Error creating idx_api_tokens_user_id:', err);
+  });
+
+  db.run(`CREATE INDEX IF NOT EXISTS idx_api_tokens_token ON api_tokens(token)`, (err) => {
+    if (err) console.error('Error creating idx_api_tokens_token:', err);
   });
 
   console.log('Database initialized successfully with performance indexes');
