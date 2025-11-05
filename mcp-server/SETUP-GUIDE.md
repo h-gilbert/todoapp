@@ -3,9 +3,9 @@
 ## What You Have Now
 
 ✅ MCP server built and ready to use
-✅ API token generated: `1c57ca1cd3c4c3b5397d59492d7c232cf6517fe3fe9c9d6d3614126782003580`
+✅ API token generated: `308844f75a8289169e798d51a7edc3570a45386572d663c8762fbccd2d1bf4f4`
 ✅ All 19 tools implemented and tested
-✅ Connected to your local Todo App at http://localhost:3300
+✅ Connected to your production Todo App at https://todo.hamishgilbert.com
 
 ## Setup for Claude Desktop / Claude Code
 
@@ -32,8 +32,8 @@ Open the config file and add this to the `mcpServers` section:
         "/Users/hamishgilbert/Downloads/Projects/todo-app/mcp-server/dist/index.js"
       ],
       "env": {
-        "TODO_APP_URL": "http://localhost:3300",
-        "API_TOKEN": "1c57ca1cd3c4c3b5397d59492d7c232cf6517fe3fe9c9d6d3614126782003580",
+        "TODO_APP_URL": "https://todo.hamishgilbert.com",
+        "API_TOKEN": "308844f75a8289169e798d51a7edc3570a45386572d663c8762fbccd2d1bf4f4",
         "USER_ID": "1"
       }
     }
@@ -56,8 +56,8 @@ Open the config file and add this to the `mcpServers` section:
         "/Users/hamishgilbert/Downloads/Projects/todo-app/mcp-server/dist/index.js"
       ],
       "env": {
-        "TODO_APP_URL": "http://localhost:3300",
-        "API_TOKEN": "1c57ca1cd3c4c3b5397d59492d7c232cf6517fe3fe9c9d6d3614126782003580",
+        "TODO_APP_URL": "https://todo.hamishgilbert.com",
+        "API_TOKEN": "308844f75a8289169e798d51a7edc3570a45386572d663c8762fbccd2d1bf4f4",
         "USER_ID": "1"
       }
     }
@@ -77,7 +77,7 @@ In Claude Code or Claude Desktop, try:
 List my projects from the todo app
 ```
 
-You should see all 20 of your projects (Store, Trading Calculator, etc.).
+You should see all your projects (Trading Calculator, Portfolio Website, etc.).
 
 ## Quick Test Examples
 
@@ -142,7 +142,7 @@ Your new MCP server has 19 tools:
 ## How It Works
 
 1. **You or Claude create tasks** - Both of you can add bugs, features, ideas, and tasks
-2. **Shared view** - Everything appears in the web UI at http://todo.hamishgilbert.test:8080
+2. **Shared view** - Everything appears in the web UI at https://todo.hamishgilbert.com
 3. **Claude tracks progress** - Claude can mark tasks complete as it works
 4. **Persistent memory** - Your project backlog is saved and accessible across sessions
 
@@ -176,12 +176,13 @@ Your new MCP server has 19 tools:
 - Look in Claude's settings/MCP section to see connected servers
 
 **API errors:**
-- Ensure Todo App backend is running: `docker ps | grep todo-app`
-- Check backend health: `curl http://localhost:3300/api/health`
+- Check backend health: `curl https://todo.hamishgilbert.com/api/health`
+- Verify you can access the web UI: https://todo.hamishgilbert.com
 
 **Token issues:**
 - Token is valid for 1 year (expires 2026-11-05)
 - Generate a new one if needed: See README.md step 2
+- Test token: `curl -H "Authorization: Bearer YOUR_TOKEN" https://todo.hamishgilbert.com/api/users/1/projects`
 
 **Need to rebuild:**
 ```bash
