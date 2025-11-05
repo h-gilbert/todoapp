@@ -54,13 +54,13 @@ jobs:
           SERVER_USER: ${{ secrets.SERVER_USER }}
         run: |
           # Create deployment directory if it doesn't exist
-          ssh ${SERVER_USER}@${SERVER_IP} "mkdir -p /mnt/user/appdata/todo-app"
+          ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 ${SERVER_USER}@${SERVER_IP} "mkdir -p /mnt/user/appdata/todo-app"
 
           # Copy deployment package to server
-          scp todo-app-deploy.tar.gz ${SERVER_USER}@${SERVER_IP}:/tmp/
+          scp -o ServerAliveInterval=30 -o ServerAliveCountMax=3 todo-app-deploy.tar.gz ${SERVER_USER}@${SERVER_IP}:/tmp/
 
           # Extract and deploy on server
-          ssh ${SERVER_USER}@${SERVER_IP} << 'ENDSSH'
+          ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=10 ${SERVER_USER}@${SERVER_IP} << 'ENDSSH'
             set -e
 
             cd /mnt/user/appdata/todo-app
@@ -76,7 +76,7 @@ jobs:
 
             # Build and start backend container
             docker-compose -f docker-compose.production.yml build
-            docker-compose -f docker-compose.production.yml up -d
+            docker-compose -f docker-compose.production.yml up -d 2>&1 | grep -v "swap limit capabilities" || true
 
             # Restart nginx to pick up new configuration
             docker restart multi-site-nginx
@@ -89,7 +89,7 @@ jobs:
           SERVER_IP: ${{ secrets.SERVER_IP }}
           SERVER_USER: ${{ secrets.SERVER_USER }}
         run: |
-          ssh ${SERVER_USER}@${SERVER_IP} << 'ENDSSH'
+          ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 ${SERVER_USER}@${SERVER_IP} << 'ENDSSH'
             echo "Checking container status..."
             docker ps | grep todo-app-backend
 
