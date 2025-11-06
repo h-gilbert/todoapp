@@ -239,7 +239,7 @@ const tools: Tool[] = [
   },
   {
     name: 'complete_task',
-    description: 'Mark a task as complete. Use this when you finish working on a task.',
+    description: 'Mark a task as complete (crosses it off but keeps it visible). The task will show as crossed out but the checkbox stays unchecked so the user can manually archive it later. Use this when you finish working on a task.',
     inputSchema: {
       type: 'object',
       required: ['taskId'],
@@ -261,6 +261,34 @@ const tools: Tool[] = [
         taskId: {
           type: 'number',
           description: 'The ID of the task to mark incomplete',
+        },
+      },
+    },
+  },
+  {
+    name: 'archive_task',
+    description: 'Archive a task (removes it from view completely). Use this when a task is fully done and should be hidden from the active task list. Typically used after a task has been marked complete.',
+    inputSchema: {
+      type: 'object',
+      required: ['taskId'],
+      properties: {
+        taskId: {
+          type: 'number',
+          description: 'The ID of the task to archive',
+        },
+      },
+    },
+  },
+  {
+    name: 'unarchive_task',
+    description: 'Unarchive a task (brings it back to the active task list).',
+    inputSchema: {
+      type: 'object',
+      required: ['taskId'],
+      properties: {
+        taskId: {
+          type: 'number',
+          description: 'The ID of the task to unarchive',
         },
       },
     },
@@ -614,14 +642,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case 'complete_task': {
         const task: any = await apiRequest(`/api/tasks/${args.taskId}`, {
           method: 'PUT',
-          body: JSON.stringify({ completed: true }),
+          body: JSON.stringify({
+            completed: true,
+            programmatic_completion: true
+          }),
         });
 
         return {
           content: [
             {
               type: 'text',
-              text: `✅ Marked task complete: "${task.title}" (ID: ${task.id})`,
+              text: `✅ Marked task complete: "${task.title}" (ID: ${task.id}) - Task is crossed off but checkbox remains unchecked for user to archive`,
             },
           ],
         };
@@ -630,7 +661,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case 'uncomplete_task': {
         const task: any = await apiRequest(`/api/tasks/${args.taskId}`, {
           method: 'PUT',
-          body: JSON.stringify({ completed: false }),
+          body: JSON.stringify({
+            completed: false,
+            programmatic_completion: false
+          }),
         });
 
         return {
@@ -638,6 +672,36 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             {
               type: 'text',
               text: `🔄 Marked task incomplete: "${task.title}" (ID: ${task.id})`,
+            },
+          ],
+        };
+      }
+
+      case 'archive_task': {
+        await apiRequest(`/api/tasks/${args.taskId}/archive`, {
+          method: 'POST',
+        });
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `📦 Archived task ID: ${args.taskId} - Task is now hidden from view`,
+            },
+          ],
+        };
+      }
+
+      case 'unarchive_task': {
+        await apiRequest(`/api/tasks/${args.taskId}/unarchive`, {
+          method: 'POST',
+        });
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `📤 Unarchived task ID: ${args.taskId} - Task is now visible again`,
             },
           ],
         };

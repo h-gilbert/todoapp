@@ -36,8 +36,10 @@ Model Context Protocol (MCP) server that enables Claude Code to interact with yo
 - `create_task` - Create a new task (any type)
 - `create_subtask` - Create a subtask under a parent
 - `update_task` - Modify task properties
-- `complete_task` - Mark task done
+- `complete_task` - Mark task done (crosses off but stays visible for user to archive)
 - `uncomplete_task` - Reopen a task
+- `archive_task` - Archive a completed task (hides from view)
+- `unarchive_task` - Restore an archived task
 - `delete_task` - Permanently remove a task
 
 ### Search & Filtering
@@ -181,6 +183,23 @@ Show me all the open bugs in my Frontend project.
 ```
 
 Claude will use `get_bugs` to fetch and display them.
+
+## Task Completion Workflow
+
+The MCP server implements a two-step completion workflow:
+
+1. **`complete_task`** - Marks a task as complete (crossed off)
+   - Task shows with strikethrough styling
+   - Checkbox remains unchecked
+   - Task stays visible in the list
+   - User can manually tick the checkbox to archive later
+
+2. **`archive_task`** - Hides a completed task from view
+   - Task is removed from active task lists
+   - Can be restored later with `unarchive_task`
+   - Typically done after user reviews completed work
+
+This workflow allows Claude to mark tasks done while giving you control over when to hide them from view.
 
 ## Use Cases
 
