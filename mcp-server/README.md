@@ -26,7 +26,9 @@ Model Context Protocol (MCP) server that enables Claude Code to interact with yo
 
 ### Project & Section Management
 - `list_projects` - Get all your projects
+- `create_project` - Create a new project
 - `list_sections` - List sections in a project
+- `create_section` - Create a new section in a project
 
 ### Task Operations
 - `list_tasks` - Get tasks in a section (with filters)

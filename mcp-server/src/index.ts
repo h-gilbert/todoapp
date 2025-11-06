@@ -68,6 +68,20 @@ const tools: Tool[] = [
     },
   },
   {
+    name: 'create_project',
+    description: 'Create a new project for the authenticated user.',
+    inputSchema: {
+      type: 'object',
+      required: ['name'],
+      properties: {
+        name: {
+          type: 'string',
+          description: 'The name of the project to create',
+        },
+      },
+    },
+  },
+  {
     name: 'list_sections',
     description: 'List all sections within a specific project. Sections organize tasks into groups like "To Do", "In Progress", "Done".',
     inputSchema: {
@@ -77,6 +91,24 @@ const tools: Tool[] = [
         projectId: {
           type: 'number',
           description: 'The ID of the project to list sections from',
+        },
+      },
+    },
+  },
+  {
+    name: 'create_section',
+    description: 'Create a new section within a project. Sections organize tasks into groups like "To Do", "In Progress", "Done", etc.',
+    inputSchema: {
+      type: 'object',
+      required: ['projectId', 'name'],
+      properties: {
+        projectId: {
+          type: 'number',
+          description: 'The ID of the project to create the section in',
+        },
+        name: {
+          type: 'string',
+          description: 'The name of the section (e.g., "To Do", "In Progress", "Done", "Backlog")',
         },
       },
     },
@@ -426,6 +458,25 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
       }
 
+      case 'create_project': {
+        const project: any = await apiRequest('/api/projects', {
+          method: 'POST',
+          body: JSON.stringify({
+            userId: USER_ID,
+            name: args.name,
+          }),
+        });
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `✅ Created project: "${project.name}" (ID: ${project.id})`,
+            },
+          ],
+        };
+      }
+
       case 'list_sections': {
         const sections = await apiRequest(`/api/projects/${args.projectId}/sections?userId=${USER_ID}`);
         return {
@@ -433,6 +484,25 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             {
               type: 'text',
               text: JSON.stringify(sections, null, 2),
+            },
+          ],
+        };
+      }
+
+      case 'create_section': {
+        const section: any = await apiRequest('/api/sections', {
+          method: 'POST',
+          body: JSON.stringify({
+            projectId: args.projectId,
+            name: args.name,
+          }),
+        });
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `✅ Created section: "${section.name}" (ID: ${section.id})`,
             },
           ],
         };
