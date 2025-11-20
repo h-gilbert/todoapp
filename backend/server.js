@@ -704,13 +704,15 @@ app.get('/api/users/:userId/projects', async (req, res) => {
 
     // Get owned projects
     const ownedProjects = await dbAll(
-      'SELECT *, user_id as owner_id, 1 as is_owner FROM projects WHERE user_id = ? ORDER BY order_index ASC',
+      'SELECT *, user_id as owner_id FROM projects WHERE user_id = ? ORDER BY order_index ASC',
       [userId]
     );
+    // Add is_owner flag as boolean
+    ownedProjects.forEach(p => p.is_owner = true);
 
     // Get shared projects with owner info
     const sharedProjects = await dbAll(
-      `SELECT p.*, p.user_id as owner_id, 0 as is_owner, u.username as owner_name
+      `SELECT p.*, p.user_id as owner_id, u.username as owner_name
        FROM project_shares ps
        JOIN projects p ON ps.project_id = p.id
        JOIN users u ON p.user_id = u.id
@@ -718,6 +720,8 @@ app.get('/api/users/:userId/projects', async (req, res) => {
        ORDER BY p.name ASC`,
       [userId]
     );
+    // Add is_owner flag as boolean
+    sharedProjects.forEach(p => p.is_owner = false);
 
     // Combine all projects
     const allProjects = [...ownedProjects, ...sharedProjects];
@@ -741,9 +745,24 @@ app.get('/api/users/:userId/projects', async (req, res) => {
       taskCountMap[tc.project_id] = tc.count;
     });
 
+    // Get share counts for owned projects
+    const shareCounts = await dbAll(
+      `SELECT project_id, COUNT(*) as share_count
+       FROM project_shares
+       WHERE project_id IN (${allProjects.map(() => '?').join(',')})
+       GROUP BY project_id`,
+      allProjects.map(p => p.id)
+    );
+
+    const shareCountMap = {};
+    shareCounts.forEach(sc => {
+      shareCountMap[sc.project_id] = sc.share_count;
+    });
+
     const projectsWithCounts = allProjects.map(project => ({
       ...project,
-      taskCount: taskCountMap[project.id] || 0
+      taskCount: taskCountMap[project.id] || 0,
+      sharedWithCount: shareCountMap[project.id] || 0
     }));
 
     // Cache the result
@@ -759,7 +778,7 @@ app.get('/api/users/:userId/projects', async (req, res) => {
 // Create a new project
 app.post('/api/projects', async (req, res) => {
   try {
-    const { userId, name } = req.body;
+    const { userId, name, description } = req.body;
 
     if (!userId || !name) {
       return res.status(400).json({ error: 'User ID and name are required' });
@@ -773,8 +792,8 @@ app.post('/api/projects', async (req, res) => {
     const orderIndex = (maxOrder.max || 0) + 1;
 
     const result = await dbRun(
-      'INSERT INTO projects (user_id, name, order_index) VALUES (?, ?, ?)',
-      [userId, name, orderIndex]
+      'INSERT INTO projects (user_id, name, description, order_index) VALUES (?, ?, ?, ?)',
+      [userId, name, description || '', orderIndex]
     );
 
     const project = await dbGet('SELECT * FROM projects WHERE id = ?', [result.lastID]);
@@ -782,7 +801,7 @@ app.post('/api/projects', async (req, res) => {
     // Invalidate projects cache
     invalidateCache('projects');
 
-    res.json({ ...project, taskCount: 0 });
+    res.json({ ...project, taskCount: 0, is_owner: true, sharedWithCount: 0 });
   } catch (error) {
     console.error('Create project error:', error);
     res.status(500).json({ error: 'Internal server error' });
@@ -793,9 +812,26 @@ app.post('/api/projects', async (req, res) => {
 app.put('/api/projects/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const { name } = req.body;
+    const { name, description } = req.body;
 
-    await dbRun('UPDATE projects SET name = ? WHERE id = ?', [name, id]);
+    const updates = [];
+    const params = [];
+
+    if (name !== undefined) {
+      updates.push('name = ?');
+      params.push(name);
+    }
+    if (description !== undefined) {
+      updates.push('description = ?');
+      params.push(description);
+    }
+
+    if (updates.length === 0) {
+      return res.status(400).json({ error: 'No fields to update' });
+    }
+
+    params.push(id);
+    await dbRun(`UPDATE projects SET ${updates.join(', ')} WHERE id = ?`, params);
     const project = await dbGet('SELECT * FROM projects WHERE id = ?', [id]);
 
     // Invalidate projects cache

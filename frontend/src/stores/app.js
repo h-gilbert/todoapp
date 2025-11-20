@@ -116,22 +116,26 @@ export const useAppStore = defineStore('app', () => {
     }
   }
 
-  async function createProject(name) {
+  async function createProject(name, description = '') {
     const response = await fetch(`${API_URL}/projects`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId: user.value.id, name })
+      body: JSON.stringify({ userId: user.value.id, name, description })
     })
     const project = await response.json()
     projects.value.push(project)
     return project
   }
 
-  async function updateProject(id, name) {
+  async function updateProject(id, name, description) {
+    const updates = {}
+    if (name !== undefined) updates.name = name
+    if (description !== undefined) updates.description = description
+
     const response = await fetch(`${API_URL}/projects/${id}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name })
+      body: JSON.stringify(updates)
     })
     const updated = await response.json()
     const index = projects.value.findIndex(p => p.id === id)
@@ -206,9 +210,21 @@ export const useAppStore = defineStore('app', () => {
   }
 
   async function deleteSection(id) {
+    // Count tasks being deleted
+    const deletedTaskCount = tasks.value[id]?.length || 0
+
     await fetch(`${API_URL}/sections/${id}`, { method: 'DELETE' })
     sections.value = sections.value.filter(s => s.id !== id)
     delete tasks.value[id]
+
+    // Update project task count locally
+    if (currentProject.value && deletedTaskCount > 0) {
+      currentProject.value.taskCount = Math.max((currentProject.value.taskCount || 0) - deletedTaskCount, 0)
+      const projectIndex = projects.value.findIndex(p => p.id === currentProject.value.id)
+      if (projectIndex !== -1) {
+        projects.value[projectIndex].taskCount = currentProject.value.taskCount
+      }
+    }
   }
 
   async function reorderSections(sectionIds) {

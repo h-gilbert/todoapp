@@ -4,7 +4,7 @@
       v-if="visible"
       ref="menuRef"
       class="context-menu"
-      :style="{ top: `${position.y}px`, left: `${position.x}px` }"
+      :style="{ top: `${adjustedPosition.y}px`, left: `${adjustedPosition.x}px` }"
       @click.stop
     >
       <div
@@ -21,7 +21,7 @@
 </template>
 
 <script setup>
-import { ref, watch, onMounted, onBeforeUnmount } from 'vue'
+import { ref, watch, onMounted, onBeforeUnmount, nextTick, computed } from 'vue'
 
 const props = defineProps({
   visible: Boolean,
@@ -38,6 +38,7 @@ const props = defineProps({
 const emit = defineEmits(['close', 'select'])
 
 const menuRef = ref(null)
+const adjustedPosition = ref({ x: 0, y: 0 })
 
 function handleItemClick(item) {
   emit('select', item)
@@ -50,8 +51,40 @@ function handleClickOutside(event) {
   }
 }
 
-watch(() => props.visible, (newVal) => {
+watch(() => props.visible, async (newVal) => {
   if (newVal) {
+    // Wait for menu to be rendered
+    await nextTick()
+
+    // Adjust position to keep menu within viewport
+    if (menuRef.value) {
+      const menuRect = menuRef.value.getBoundingClientRect()
+      const viewportWidth = window.innerWidth
+      const viewportHeight = window.innerHeight
+
+      let x = props.position.x
+      let y = props.position.y
+
+      // Check if menu would overflow right edge
+      if (x + menuRect.width > viewportWidth) {
+        x = viewportWidth - menuRect.width - 10
+      }
+
+      // Check if menu would overflow bottom edge
+      if (y + menuRect.height > viewportHeight) {
+        // Position above the cursor instead
+        y = y - menuRect.height
+        // Make sure it doesn't go above the top
+        if (y < 0) {
+          y = 10
+        }
+      }
+
+      adjustedPosition.value = { x, y }
+    } else {
+      adjustedPosition.value = props.position
+    }
+
     // Add click listener when menu becomes visible
     setTimeout(() => {
       document.addEventListener('click', handleClickOutside)
@@ -61,6 +94,11 @@ watch(() => props.visible, (newVal) => {
     document.removeEventListener('click', handleClickOutside)
   }
 })
+
+// Initialize position
+watch(() => props.position, (newPos) => {
+  adjustedPosition.value = newPos
+}, { immediate: true })
 
 onBeforeUnmount(() => {
   document.removeEventListener('click', handleClickOutside)

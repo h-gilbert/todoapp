@@ -78,6 +78,32 @@ const tools: Tool[] = [
           type: 'string',
           description: 'The name of the project to create',
         },
+        description: {
+          type: 'string',
+          description: 'Optional description for the project',
+        },
+      },
+    },
+  },
+  {
+    name: 'update_project',
+    description: "Update an existing project's name or description.",
+    inputSchema: {
+      type: 'object',
+      required: ['projectId'],
+      properties: {
+        projectId: {
+          type: 'number',
+          description: 'The ID of the project to update',
+        },
+        name: {
+          type: 'string',
+          description: 'New name for the project',
+        },
+        description: {
+          type: 'string',
+          description: 'New description for the project',
+        },
       },
     },
   },
@@ -492,6 +518,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           body: JSON.stringify({
             userId: USER_ID,
             name: args.name,
+            description: args.description || '',
           }),
         });
 
@@ -500,6 +527,26 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             {
               type: 'text',
               text: `✅ Created project: "${project.name}" (ID: ${project.id})`,
+            },
+          ],
+        };
+      }
+
+      case 'update_project': {
+        const updates: any = {};
+        if (args.name !== undefined) updates.name = args.name;
+        if (args.description !== undefined) updates.description = args.description;
+
+        const project: any = await apiRequest(`/api/projects/${args.projectId}`, {
+          method: 'PUT',
+          body: JSON.stringify(updates),
+        });
+
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `✅ Updated project: "${project.name}" (ID: ${project.id})`,
             },
           ],
         };

@@ -1,7 +1,7 @@
 <template>
   <div class="modal-overlay" @click="$emit('close')">
     <div class="modal-content" @click.stop>
-      <h2>{{ project ? 'Rename Project' : 'New Project' }}</h2>
+      <h2>{{ project ? 'Edit Project' : 'New Project' }}</h2>
       <form @submit.prevent="handleSubmit">
         <div class="form-group">
           <label>Project Name</label>
@@ -11,6 +11,15 @@
             type="text"
             placeholder="Enter project name"
             class="form-input"
+          />
+        </div>
+        <div class="form-group">
+          <label>Description (optional)</label>
+          <textarea
+            v-model="description"
+            placeholder="What is this project about? What are you trying to achieve?"
+            class="form-input"
+            rows="3"
           />
         </div>
         <div class="modal-actions">
@@ -39,6 +48,7 @@ const props = defineProps({
 const emit = defineEmits(['close', 'save'])
 
 const name = ref(props.project?.name || '')
+const description = ref(props.project?.description || '')
 const inputRef = ref(null)
 
 onMounted(async () => {
@@ -48,7 +58,7 @@ onMounted(async () => {
 
 function handleSubmit() {
   if (name.value.trim()) {
-    emit('save', name.value.trim())
+    emit('save', { name: name.value.trim(), description: description.value.trim() })
   }
 }
 </script>
@@ -100,6 +110,8 @@ label {
   border-radius: 8px;
   font-size: 1rem;
   transition: border-color 0.2s;
+  font-family: inherit;
+  resize: vertical;
 }
 
 .form-input:focus {

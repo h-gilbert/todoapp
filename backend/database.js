@@ -129,6 +129,15 @@ db.serialize(() => {
     }
   });
 
+  // Migration: Add description column to projects if it doesn't exist
+  db.run(`ALTER TABLE projects ADD COLUMN description TEXT`, (err) => {
+    if (err && !err.message.includes('duplicate column')) {
+      console.error('Migration error:', err);
+    } else if (!err) {
+      console.log('Added description column to projects table');
+    }
+  });
+
   // Migration: Remove type column from tasks (no longer needed)
   // Check if type column exists and remove it if present
   db.all(`PRAGMA table_info(tasks)`, (err, columns) => {

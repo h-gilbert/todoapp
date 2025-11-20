@@ -24,12 +24,14 @@
         <template #item="{ element }">
           <div
             class="project-item"
-            :class="{ active: store.currentProject?.id === element.id, shared: !element.is_owner }"
+            :class="{ active: store.currentProject?.id === element.id, shared: element.is_owner === false }"
+            :title="element.description || ''"
             @click="selectProject(element)"
             @contextmenu.prevent="handleContextMenu($event, element)"
           >
             <span class="project-name">
-              <span v-if="!element.is_owner" class="shared-badge" :title="'Shared by ' + element.owner_name">SHARED</span>
+              <span v-if="element.is_owner === false" class="shared-badge" :title="'Shared by ' + element.owner_name">SHARED</span>
+              <span v-if="element.is_owner === true && element.sharedWithCount > 0" class="sharing-badge" :title="'Shared with ' + element.sharedWithCount + ' user(s)'">SHARING</span>
               # {{ element.name }}
             </span>
             <span class="task-count">{{ element.taskCount || 0 }}</span>
@@ -102,10 +104,10 @@ const contextMenuItems = computed(() => {
   const project = contextMenu.value.project
   const items = []
 
-  // Only owners can share and rename projects
+  // Only owners can share and edit projects
   if (project?.is_owner) {
     items.push({ label: 'Share', action: 'share' })
-    items.push({ label: 'Rename', action: 'rename' })
+    items.push({ label: 'Edit', action: 'rename' })
   }
 
   // Only owners can delete projects
@@ -120,14 +122,14 @@ async function selectProject(project) {
   await store.selectProject(project)
 }
 
-async function handleCreateProject(name) {
-  await store.createProject(name)
+async function handleCreateProject(projectData) {
+  await store.createProject(projectData.name, projectData.description)
   showNewProjectModal.value = false
 }
 
-async function handleRenameProject(name) {
+async function handleRenameProject(projectData) {
   if (editingProject.value) {
-    await store.updateProject(editingProject.value.id, name)
+    await store.updateProject(editingProject.value.id, projectData.name, projectData.description)
     editingProject.value = null
   }
 }
@@ -317,7 +319,16 @@ async function handleProjectReorder() {
   padding: 0.125rem 0.375rem;
   border-radius: 3px;
   margin-right: 0.375rem;
-  text-transform: uppercase;
-  letter-spacing: 0.3px;
+}
+
+.sharing-badge {
+  display: inline-block;
+  font-size: 0.65rem;
+  font-weight: 600;
+  color: #0288d1;
+  background: #b3e5fc;
+  padding: 0.125rem 0.375rem;
+  border-radius: 3px;
+  margin-right: 0.375rem;
 }
 </style>
