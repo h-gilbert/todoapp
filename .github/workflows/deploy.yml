@@ -60,7 +60,7 @@ jobs:
           scp -o ServerAliveInterval=30 -o ServerAliveCountMax=3 todo-app-deploy.tar.gz ${SERVER_USER}@${SERVER_IP}:/tmp/
 
           # Extract and deploy on server
-          ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=10 ${SERVER_USER}@${SERVER_IP} << 'ENDSSH'
+          ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=30 ${SERVER_USER}@${SERVER_IP} << 'ENDSSH'
             set -e
 
             cd /mnt/user/appdata/todo-app
@@ -89,13 +89,26 @@ jobs:
           SERVER_IP: ${{ secrets.SERVER_IP }}
           SERVER_USER: ${{ secrets.SERVER_USER }}
         run: |
-          ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 ${SERVER_USER}@${SERVER_IP} << 'ENDSSH'
+          ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=30 ${SERVER_USER}@${SERVER_IP} << 'ENDSSH'
             echo "Checking container status..."
-            docker ps | grep todo-app-backend
+            docker ps | grep todo-app-backend || true
+
+            echo "Waiting for containers to be ready..."
+            sleep 15
 
             echo "Checking backend health..."
-            sleep 5
-            curl -f http://192.168.1.2:3500/api/health || echo "Health check failed (this is expected on first deploy)"
+            for i in {1..5}; do
+              if curl -f -s http://192.168.1.2:3500/api/health > /dev/null 2>&1; then
+                echo "✅ Backend is healthy!"
+                exit 0
+              else
+                echo "Attempt $i: Backend not ready yet, waiting..."
+                sleep 3
+              fi
+            done
+
+            echo "⚠️  Health check didn't pass, but deployment completed. Container may need more time to start."
+            exit 0
           ENDSSH
 
       - name: Deployment summary
