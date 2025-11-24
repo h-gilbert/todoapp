@@ -187,7 +187,7 @@ export const useAppStore = defineStore('app', () => {
     const response = await fetch(`${API_URL}/sections`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ projectId: currentProject.value.id, name })
+      body: JSON.stringify({ projectId: currentProject.value.id, name, userId: user.value?.id })
     })
     const section = await response.json()
     sections.value.push(section)
@@ -236,7 +236,11 @@ export const useAppStore = defineStore('app', () => {
   }
 
   async function archiveSection(id) {
-    await fetch(`${API_URL}/sections/${id}/archive`, { method: 'POST' })
+    await fetch(`${API_URL}/sections/${id}/archive`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: user.value?.id })
+    })
 
     // Count tasks being archived
     const archivedTaskCount = tasks.value[id]?.length || 0
@@ -291,7 +295,7 @@ export const useAppStore = defineStore('app', () => {
     const response = await fetch(`${API_URL}/tasks`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sectionId, title, description, parent_task_id })
+      body: JSON.stringify({ sectionId, title, description, parent_task_id, userId: user.value?.id })
     })
     const task = await response.json()
 
@@ -323,7 +327,7 @@ export const useAppStore = defineStore('app', () => {
     const response = await fetch(`${API_URL}/tasks/${id}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(updates)
+      body: JSON.stringify({ ...updates, userId: user.value?.id })
     })
     const updated = await response.json()
 
@@ -350,7 +354,11 @@ export const useAppStore = defineStore('app', () => {
   }
 
   async function archiveTask(id) {
-    await fetch(`${API_URL}/tasks/${id}/archive`, { method: 'POST' })
+    await fetch(`${API_URL}/tasks/${id}/archive`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: user.value?.id })
+    })
 
     // Remove from current tasks
     for (const sectionId in tasks.value) {

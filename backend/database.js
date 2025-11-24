@@ -243,6 +243,48 @@ db.serialize(() => {
     }
   });
 
+  // Migration: Add user attribution columns to tasks (for shared projects visibility)
+  db.run(`ALTER TABLE tasks ADD COLUMN created_by_user_id INTEGER REFERENCES users(id)`, (err) => {
+    if (err && !err.message.includes('duplicate column')) {
+      console.error('Migration error:', err);
+    } else if (!err) {
+      console.log('Added created_by_user_id column to tasks table');
+    }
+  });
+
+  db.run(`ALTER TABLE tasks ADD COLUMN completed_by_user_id INTEGER REFERENCES users(id)`, (err) => {
+    if (err && !err.message.includes('duplicate column')) {
+      console.error('Migration error:', err);
+    } else if (!err) {
+      console.log('Added completed_by_user_id column to tasks table');
+    }
+  });
+
+  db.run(`ALTER TABLE tasks ADD COLUMN archived_by_user_id INTEGER REFERENCES users(id)`, (err) => {
+    if (err && !err.message.includes('duplicate column')) {
+      console.error('Migration error:', err);
+    } else if (!err) {
+      console.log('Added archived_by_user_id column to tasks table');
+    }
+  });
+
+  // Migration: Add user attribution columns to sections (for shared projects visibility)
+  db.run(`ALTER TABLE sections ADD COLUMN created_by_user_id INTEGER REFERENCES users(id)`, (err) => {
+    if (err && !err.message.includes('duplicate column')) {
+      console.error('Migration error:', err);
+    } else if (!err) {
+      console.log('Added created_by_user_id column to sections table');
+    }
+  });
+
+  db.run(`ALTER TABLE sections ADD COLUMN archived_by_user_id INTEGER REFERENCES users(id)`, (err) => {
+    if (err && !err.message.includes('duplicate column')) {
+      console.error('Migration error:', err);
+    } else if (!err) {
+      console.log('Added archived_by_user_id column to sections table');
+    }
+  });
+
   // Create labels table for task tagging
   db.run(`
     CREATE TABLE IF NOT EXISTS labels (

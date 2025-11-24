@@ -22,8 +22,11 @@
         <div v-if="task.subtask_count && task.subtask_count > 0" class="subtask-badge">
           {{ task.completed_subtask_count || 0 }}/{{ task.subtask_count }}
         </div>
-        <div v-if="task.completed_at" class="timestamp completed-timestamp" :title="new Date(task.completed_at).toLocaleString()">
-          Completed {{ formatTimestamp(task.completed_at) }}
+        <div v-if="task.created_by_username && isSharedProject" class="user-badge created-by" :title="`Created by ${task.created_by_username}`">
+          {{ task.created_by_username }}
+        </div>
+        <div v-if="task.completed_at" class="timestamp completed-timestamp" :title="completedTooltip">
+          Completed {{ formatTimestamp(task.completed_at) }}<span v-if="task.completed_by_username && isSharedProject" class="by-user"> by {{ task.completed_by_username }}</span>
         </div>
         <div v-if="task.archived_at" class="timestamp archived-timestamp" :title="new Date(task.archived_at).toLocaleString()">
           Archived {{ formatTimestamp(task.archived_at) }}
@@ -79,6 +82,24 @@ const showEditModal = ref(false)
 
 // Use computed to get cached photos
 const photos = computed(() => store.photoCache[props.task.id] || [])
+
+// Check if current project is shared (has shares or user is not the owner)
+const isSharedProject = computed(() => {
+  const project = store.currentProject
+  if (!project) return false
+  // Project is "shared" if it's not owned by current user OR if owner has shared it with others
+  return !project.is_owner || (project.sharedWithCount && project.sharedWithCount > 0)
+})
+
+// Generate tooltip for completed timestamp including user info
+const completedTooltip = computed(() => {
+  if (!props.task.completed_at) return ''
+  const date = new Date(props.task.completed_at).toLocaleString()
+  if (props.task.completed_by_username && isSharedProject.value) {
+    return `Completed by ${props.task.completed_by_username} on ${date}`
+  }
+  return date
+})
 
 onMounted(async () => {
   // Load photos for this task (will use cache if available)
@@ -287,5 +308,22 @@ function handleModalClose() {
 .archived-timestamp {
   color: #6c5ce7;
   background: #e8e4ff;
+}
+
+.user-badge {
+  font-size: 0.7rem;
+  padding: 0.2rem 0.5rem;
+  border-radius: 10px;
+  cursor: default;
+}
+
+.created-by {
+  color: #636e72;
+  background: #f0f0f0;
+}
+
+.by-user {
+  font-weight: 500;
+  opacity: 0.85;
 }
 </style>

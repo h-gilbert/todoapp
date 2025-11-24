@@ -1,7 +1,12 @@
 <template>
   <div class="section" :data-section-id="section.id">
     <div class="section-header">
-      <h3>{{ section.name }}</h3>
+      <div class="section-title-row">
+        <h3>{{ section.name }}</h3>
+        <span v-if="section.created_by_username && isSharedProject" class="section-creator" :title="`Created by ${section.created_by_username}`">
+          {{ section.created_by_username }}
+        </span>
+      </div>
       <div class="section-actions">
         <button @click.stop="handleContextMenu" class="menu-btn" title="Section menu">⋮</button>
         <button @click="showNewTaskModal = true" class="add-task-btn" title="Add task">+</button>
@@ -78,6 +83,13 @@ const contextMenuItems = [
 
 const sectionTasks = computed(() => {
   return store.tasks[props.section.id] || []
+})
+
+// Check if current project is shared (has shares or user is not the owner)
+const isSharedProject = computed(() => {
+  const project = store.currentProject
+  if (!project) return false
+  return !project.is_owner || (project.sharedWithCount && project.sharedWithCount > 0)
 })
 
 function updateTasks(newTasks) {
@@ -186,12 +198,30 @@ async function handleMenuSelect(item) {
   cursor: grabbing;
 }
 
+.section-title-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex: 1;
+  min-width: 0;
+}
+
 .section-header h3 {
   font-size: 1rem;
   font-weight: 600;
   color: #2d3436;
   text-transform: capitalize;
   margin: 0;
+}
+
+.section-creator {
+  font-size: 0.7rem;
+  padding: 0.15rem 0.4rem;
+  border-radius: 8px;
+  background: #f0f0f0;
+  color: #636e72;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .section-actions {

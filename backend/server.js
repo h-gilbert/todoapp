@@ -992,14 +992,17 @@ app.delete('/api/projects/:id/shares/:shareUserId', async (req, res) => {
 
 // ============ SECTION ROUTES ============
 
-// Get all sections for a project
+// Get all sections for a project (with creator info for shared projects)
 app.get('/api/projects/:projectId/sections', async (req, res) => {
   try {
     const { projectId } = req.params;
-    const sections = await dbAll(
-      'SELECT * FROM sections WHERE project_id = ? AND archived = 0 ORDER BY order_index ASC',
-      [projectId]
-    );
+    const sections = await dbAll(`
+      SELECT s.*, u.username as created_by_username
+      FROM sections s
+      LEFT JOIN users u ON s.created_by_user_id = u.id
+      WHERE s.project_id = ? AND s.archived = 0
+      ORDER BY s.order_index ASC
+    `, [projectId]);
     res.json(sections);
   } catch (error) {
     console.error('Get sections error:', error);
@@ -1010,7 +1013,7 @@ app.get('/api/projects/:projectId/sections', async (req, res) => {
 // Create a new section
 app.post('/api/sections', async (req, res) => {
   try {
-    const { projectId, name } = req.body;
+    const { projectId, name, userId } = req.body;
 
     if (!projectId || !name) {
       return res.status(400).json({ error: 'Project ID and name are required' });
@@ -1023,11 +1026,17 @@ app.post('/api/sections', async (req, res) => {
     const orderIndex = (maxOrder.max || 0) + 1;
 
     const result = await dbRun(
-      'INSERT INTO sections (project_id, name, order_index) VALUES (?, ?, ?)',
-      [projectId, name, orderIndex]
+      'INSERT INTO sections (project_id, name, order_index, created_by_user_id) VALUES (?, ?, ?, ?)',
+      [projectId, name, orderIndex, userId || null]
     );
 
-    const section = await dbGet('SELECT * FROM sections WHERE id = ?', [result.lastID]);
+    // Get section with creator username
+    const section = await dbGet(`
+      SELECT s.*, u.username as created_by_username
+      FROM sections s
+      LEFT JOIN users u ON s.created_by_user_id = u.id
+      WHERE s.id = ?
+    `, [result.lastID]);
 
     // Invalidate caches
     invalidateCache('sections');
@@ -1088,15 +1097,16 @@ app.post('/api/sections/reorder', async (req, res) => {
 app.post('/api/sections/:id/archive', async (req, res) => {
   try {
     const { id } = req.params;
+    const { userId } = req.body;
 
     // Archive all completed tasks in this section
     await dbRun(
-      'UPDATE tasks SET archived = 1 WHERE section_id = ? AND completed = 1',
-      [id]
+      'UPDATE tasks SET archived = 1, archived_by_user_id = ? WHERE section_id = ? AND completed = 1',
+      [userId || null, id]
     );
 
     // Archive the section
-    await dbRun('UPDATE sections SET archived = 1 WHERE id = ?', [id]);
+    await dbRun('UPDATE sections SET archived = 1, archived_by_user_id = ? WHERE id = ?', [userId || null, id]);
 
     res.json({ success: true });
   } catch (error) {
@@ -1132,13 +1142,22 @@ app.post('/api/sections/:id/unarchive', async (req, res) => {
 // ============ TASK ROUTES ============
 
 // Get all tasks for a section (excluding subtasks - they're fetched separately)
+// Includes user attribution info for shared projects
 app.get('/api/sections/:sectionId/tasks', async (req, res) => {
   try {
     const { sectionId } = req.params;
-    const tasks = await dbAll(
-      'SELECT * FROM tasks WHERE section_id = ? AND archived = 0 AND parent_task_id IS NULL ORDER BY order_index ASC',
-      [sectionId]
-    );
+    const tasks = await dbAll(`
+      SELECT t.*,
+        u1.username as created_by_username,
+        u2.username as completed_by_username,
+        u3.username as archived_by_username
+      FROM tasks t
+      LEFT JOIN users u1 ON t.created_by_user_id = u1.id
+      LEFT JOIN users u2 ON t.completed_by_user_id = u2.id
+      LEFT JOIN users u3 ON t.archived_by_user_id = u3.id
+      WHERE t.section_id = ? AND t.archived = 0 AND t.parent_task_id IS NULL
+      ORDER BY t.order_index ASC
+    `, [sectionId]);
 
     // Add subtask count for each task
     for (let task of tasks) {
@@ -1166,7 +1185,7 @@ app.get('/api/sections/:sectionId/tasks', async (req, res) => {
 // Create a new task
 app.post('/api/tasks', async (req, res) => {
   try {
-    const { sectionId, title, description, parent_task_id } = req.body;
+    const { sectionId, title, description, parent_task_id, userId } = req.body;
 
     if (!sectionId || !title) {
       return res.status(400).json({ error: 'Section ID and title are required' });
@@ -1191,11 +1210,17 @@ app.post('/api/tasks', async (req, res) => {
     const orderIndex = (maxOrder.max || 0) + 1;
 
     const result = await dbRun(
-      'INSERT INTO tasks (section_id, title, description, parent_task_id, order_index) VALUES (?, ?, ?, ?, ?)',
-      [sectionId, title, description || '', parent_task_id || null, orderIndex]
+      'INSERT INTO tasks (section_id, title, description, parent_task_id, order_index, created_by_user_id) VALUES (?, ?, ?, ?, ?, ?)',
+      [sectionId, title, description || '', parent_task_id || null, orderIndex, userId || null]
     );
 
-    const task = await dbGet('SELECT * FROM tasks WHERE id = ?', [result.lastID]);
+    // Get task with creator username
+    const task = await dbGet(`
+      SELECT t.*, u.username as created_by_username
+      FROM tasks t
+      LEFT JOIN users u ON t.created_by_user_id = u.id
+      WHERE t.id = ?
+    `, [result.lastID]);
 
     // Get subtask count
     const subtaskCount = await dbGet(
@@ -1222,7 +1247,7 @@ app.post('/api/tasks', async (req, res) => {
 app.put('/api/tasks/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const { title, description, completed, programmatic_completion, parent_task_id } = req.body;
+    const { title, description, completed, programmatic_completion, parent_task_id, userId } = req.body;
 
     const updates = [];
     const params = [];
@@ -1238,12 +1263,15 @@ app.put('/api/tasks/:id', async (req, res) => {
     if (completed !== undefined) {
       updates.push('completed = ?');
       params.push(completed ? 1 : 0);
-      // Set or clear completed_at timestamp (using JS date for correct timezone)
+      // Set or clear completed_at timestamp and completed_by_user_id
       if (completed) {
         updates.push('completed_at = ?');
         params.push(new Date().toISOString());
+        updates.push('completed_by_user_id = ?');
+        params.push(userId || null);
       } else {
         updates.push('completed_at = NULL');
+        updates.push('completed_by_user_id = NULL');
       }
     }
     if (programmatic_completion !== undefined) {
@@ -1277,7 +1305,17 @@ app.put('/api/tasks/:id', async (req, res) => {
     params.push(id);
 
     await dbRun(`UPDATE tasks SET ${updates.join(', ')} WHERE id = ?`, params);
-    const task = await dbGet('SELECT * FROM tasks WHERE id = ?', [id]);
+
+    // Get task with user attribution info
+    const task = await dbGet(`
+      SELECT t.*,
+        u1.username as created_by_username,
+        u2.username as completed_by_username
+      FROM tasks t
+      LEFT JOIN users u1 ON t.created_by_user_id = u1.id
+      LEFT JOIN users u2 ON t.completed_by_user_id = u2.id
+      WHERE t.id = ?
+    `, [id]);
 
     // Get subtask count
     const subtaskCount = await dbGet(
@@ -1338,10 +1376,16 @@ app.get('/api/tasks/:id/subtasks', async (req, res) => {
       return res.status(404).json({ error: 'Parent task not found' });
     }
 
-    const subtasks = await dbAll(
-      'SELECT * FROM tasks WHERE parent_task_id = ? ORDER BY order_index ASC',
-      [id]
-    );
+    const subtasks = await dbAll(`
+      SELECT t.*,
+        u1.username as created_by_username,
+        u2.username as completed_by_username
+      FROM tasks t
+      LEFT JOIN users u1 ON t.created_by_user_id = u1.id
+      LEFT JOIN users u2 ON t.completed_by_user_id = u2.id
+      WHERE t.parent_task_id = ?
+      ORDER BY t.order_index ASC
+    `, [id]);
 
     res.json(subtasks);
   } catch (error) {
@@ -1354,7 +1398,7 @@ app.get('/api/tasks/:id/subtasks', async (req, res) => {
 app.post('/api/tasks/:id/subtasks', async (req, res) => {
   try {
     const { id } = req.params;
-    const { title, description } = req.body;
+    const { title, description, userId } = req.body;
 
     if (!title) {
       return res.status(400).json({ error: 'Title is required' });
@@ -1377,11 +1421,16 @@ app.post('/api/tasks/:id/subtasks', async (req, res) => {
     const orderIndex = (maxOrder.max || 0) + 1;
 
     const result = await dbRun(
-      'INSERT INTO tasks (section_id, title, description, parent_task_id, order_index) VALUES (?, ?, ?, ?, ?)',
-      [parentTask.section_id, title, description || '', id, orderIndex]
+      'INSERT INTO tasks (section_id, title, description, parent_task_id, order_index, created_by_user_id) VALUES (?, ?, ?, ?, ?, ?)',
+      [parentTask.section_id, title, description || '', id, orderIndex, userId || null]
     );
 
-    const subtask = await dbGet('SELECT * FROM tasks WHERE id = ?', [result.lastID]);
+    const subtask = await dbGet(`
+      SELECT t.*, u.username as created_by_username
+      FROM tasks t
+      LEFT JOIN users u ON t.created_by_user_id = u.id
+      WHERE t.id = ?
+    `, [result.lastID]);
 
     // Invalidate caches
     invalidateCache('tasks');
@@ -1397,7 +1446,8 @@ app.post('/api/tasks/:id/subtasks', async (req, res) => {
 app.post('/api/tasks/:id/archive', async (req, res) => {
   try {
     const { id } = req.params;
-    await dbRun('UPDATE tasks SET archived = 1, archived_at = ? WHERE id = ?', [new Date().toISOString(), id]);
+    const { userId } = req.body;
+    await dbRun('UPDATE tasks SET archived = 1, archived_at = ?, archived_by_user_id = ? WHERE id = ?', [new Date().toISOString(), userId || null, id]);
 
     // Invalidate caches
     invalidateCache('tasks');
