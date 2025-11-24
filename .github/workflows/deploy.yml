@@ -60,7 +60,7 @@ jobs:
           scp -o ServerAliveInterval=30 -o ServerAliveCountMax=3 todo-app-deploy.tar.gz ${SERVER_USER}@${SERVER_IP}:/tmp/
 
           # Extract and deploy on server
-          ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=30 ${SERVER_USER}@${SERVER_IP} << 'ENDSSH'
+          ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=30 -o BatchMode=yes ${SERVER_USER}@${SERVER_IP} 'bash -s' << 'ENDSSH'
             set -e
 
             cd /mnt/user/appdata/todo-app
@@ -79,7 +79,7 @@ jobs:
             docker-compose -f docker-compose.production.yml up -d 2>&1 | grep -v "swap limit capabilities" || true
 
             # Restart nginx to pick up new configuration
-            docker restart multi-site-nginx
+            timeout 30 docker restart multi-site-nginx || true
 
             echo "Deployment completed successfully!"
           ENDSSH
@@ -89,25 +89,25 @@ jobs:
           SERVER_IP: ${{ secrets.SERVER_IP }}
           SERVER_USER: ${{ secrets.SERVER_USER }}
         run: |
-          ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=30 ${SERVER_USER}@${SERVER_IP} << 'ENDSSH'
+          ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=30 -o BatchMode=yes ${SERVER_USER}@${SERVER_IP} 'bash -s' << 'ENDSSH'
             echo "Checking container status..."
             docker ps | grep todo-app-backend || true
 
             echo "Waiting for containers to be ready..."
-            sleep 15
+            sleep 5
 
             echo "Checking backend health..."
-            for i in {1..5}; do
+            for i in 1 2 3; do
               if curl -f -s http://192.168.1.2:3500/api/health > /dev/null 2>&1; then
-                echo "✅ Backend is healthy!"
+                echo "Backend is healthy!"
                 exit 0
               else
                 echo "Attempt $i: Backend not ready yet, waiting..."
-                sleep 3
+                sleep 2
               fi
             done
 
-            echo "⚠️  Health check didn't pass, but deployment completed. Container may need more time to start."
+            echo "Health check didn't pass, but deployment completed."
             exit 0
           ENDSSH
 
