@@ -1238,6 +1238,13 @@ app.put('/api/tasks/:id', async (req, res) => {
     if (completed !== undefined) {
       updates.push('completed = ?');
       params.push(completed ? 1 : 0);
+      // Set or clear completed_at timestamp (using JS date for correct timezone)
+      if (completed) {
+        updates.push('completed_at = ?');
+        params.push(new Date().toISOString());
+      } else {
+        updates.push('completed_at = NULL');
+      }
     }
     if (programmatic_completion !== undefined) {
       updates.push('programmatic_completion = ?');
@@ -1390,7 +1397,7 @@ app.post('/api/tasks/:id/subtasks', async (req, res) => {
 app.post('/api/tasks/:id/archive', async (req, res) => {
   try {
     const { id } = req.params;
-    await dbRun('UPDATE tasks SET archived = 1 WHERE id = ?', [id]);
+    await dbRun('UPDATE tasks SET archived = 1, archived_at = ? WHERE id = ?', [new Date().toISOString(), id]);
 
     // Invalidate caches
     invalidateCache('tasks');
@@ -1417,7 +1424,7 @@ app.post('/api/tasks/:id/unarchive', async (req, res) => {
     );
     const orderIndex = (maxOrder.max || 0) + 1;
 
-    await dbRun('UPDATE tasks SET archived = 0, completed = 0, programmatic_completion = 0, order_index = ? WHERE id = ?', [orderIndex, id]);
+    await dbRun('UPDATE tasks SET archived = 0, archived_at = NULL, completed = 0, completed_at = NULL, programmatic_completion = 0, order_index = ? WHERE id = ?', [orderIndex, id]);
 
     const updatedTask = await dbGet('SELECT * FROM tasks WHERE id = ?', [id]);
     res.json(updatedTask);

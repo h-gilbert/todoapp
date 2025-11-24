@@ -225,6 +225,24 @@ db.serialize(() => {
     }
   });
 
+  // Migration: Add completed_at timestamp for tracking when tasks are completed
+  db.run(`ALTER TABLE tasks ADD COLUMN completed_at DATETIME`, (err) => {
+    if (err && !err.message.includes('duplicate column')) {
+      console.error('Migration error:', err);
+    } else if (!err) {
+      console.log('Added completed_at column to tasks table');
+    }
+  });
+
+  // Migration: Add archived_at timestamp for tracking when tasks are archived
+  db.run(`ALTER TABLE tasks ADD COLUMN archived_at DATETIME`, (err) => {
+    if (err && !err.message.includes('duplicate column')) {
+      console.error('Migration error:', err);
+    } else if (!err) {
+      console.log('Added archived_at column to tasks table');
+    }
+  });
+
   // Create labels table for task tagging
   db.run(`
     CREATE TABLE IF NOT EXISTS labels (

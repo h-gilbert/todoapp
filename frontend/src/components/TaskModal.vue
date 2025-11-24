@@ -64,6 +64,9 @@
               >
                 {{ subtask.title }}
               </span>
+              <span v-if="subtask.completed_at" class="subtask-timestamp" :title="new Date(subtask.completed_at).toLocaleString()">
+                {{ formatTimestamp(subtask.completed_at) }}
+              </span>
             </div>
           </div>
           <button type="button" @click="openAddSubtaskModal" class="btn-add-subtask">
@@ -174,6 +177,23 @@ import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { useAppStore } from '../stores/app'
 
 const store = useAppStore()
+
+// Format timestamp as relative time (e.g., "2 hours ago") or date
+function formatTimestamp(timestamp) {
+  if (!timestamp) return ''
+  const date = new Date(timestamp)
+  const now = new Date()
+  const diffMs = now - date
+  const diffMins = Math.floor(diffMs / 60000)
+  const diffHours = Math.floor(diffMs / 3600000)
+  const diffDays = Math.floor(diffMs / 86400000)
+
+  if (diffMins < 1) return 'just now'
+  if (diffMins < 60) return `${diffMins}m ago`
+  if (diffHours < 24) return `${diffHours}h ago`
+  if (diffDays < 7) return `${diffDays}d ago`
+  return date.toLocaleDateString()
+}
 
 const props = defineProps({
   task: {
@@ -328,10 +348,9 @@ async function handleAddSubtask({ title, description, selectedLabels }) {
 async function handleToggleSubtask(subtaskId, completed) {
   try {
     await store.updateTask(subtaskId, { completed })
-    const subtask = subtasksList.value.find(s => s.id === subtaskId)
-    if (subtask) {
-      subtask.completed = completed
-    }
+
+    // Reload subtasks to get updated completed_at timestamp
+    subtasksList.value = await store.loadSubtasks(props.task.id, true)
 
     // Reload parent task to get updated completed_subtask_count
     await refreshParentTask()
@@ -861,6 +880,15 @@ label {
 .subtask-clickable:hover {
   color: #a29bfe;
   text-decoration: underline;
+}
+
+.subtask-timestamp {
+  font-size: 0.7rem;
+  color: #00b894;
+  background: #d4f5ec;
+  padding: 0.15rem 0.4rem;
+  border-radius: 8px;
+  white-space: nowrap;
 }
 
 .btn-add-subtask {

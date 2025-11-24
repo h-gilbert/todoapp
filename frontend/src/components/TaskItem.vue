@@ -18,8 +18,16 @@
         </div>
         <div v-if="photos.length > 3" class="photo-count">+{{ photos.length - 3 }}</div>
       </div>
-      <div v-if="task.subtask_count && task.subtask_count > 0" class="subtask-badge">
-        {{ task.completed_subtask_count || 0 }}/{{ task.subtask_count }}
+      <div class="task-meta">
+        <div v-if="task.subtask_count && task.subtask_count > 0" class="subtask-badge">
+          {{ task.completed_subtask_count || 0 }}/{{ task.subtask_count }}
+        </div>
+        <div v-if="task.completed_at" class="timestamp completed-timestamp" :title="new Date(task.completed_at).toLocaleString()">
+          Completed {{ formatTimestamp(task.completed_at) }}
+        </div>
+        <div v-if="task.archived_at" class="timestamp archived-timestamp" :title="new Date(task.archived_at).toLocaleString()">
+          Archived {{ formatTimestamp(task.archived_at) }}
+        </div>
       </div>
     </div>
 
@@ -48,6 +56,23 @@ const props = defineProps({
     required: true
   }
 })
+
+// Format timestamp as relative time (e.g., "2 hours ago") or date
+function formatTimestamp(timestamp) {
+  if (!timestamp) return ''
+  const date = new Date(timestamp)
+  const now = new Date()
+  const diffMs = now - date
+  const diffMins = Math.floor(diffMs / 60000)
+  const diffHours = Math.floor(diffMs / 3600000)
+  const diffDays = Math.floor(diffMs / 86400000)
+
+  if (diffMins < 1) return 'just now'
+  if (diffMins < 60) return `${diffMins}m ago`
+  if (diffHours < 24) return `${diffHours}h ago`
+  if (diffDays < 7) return `${diffDays}d ago`
+  return date.toLocaleDateString()
+}
 
 const store = useAppStore()
 const showEditModal = ref(false)
@@ -229,6 +254,14 @@ function handleModalClose() {
   color: #636e72;
 }
 
+.task-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  margin-top: 0.5rem;
+}
+
 .subtask-badge {
   display: inline-block;
   padding: 0.25rem 0.5rem;
@@ -237,6 +270,22 @@ function handleModalClose() {
   font-size: 0.7rem;
   color: #636e72;
   font-weight: 600;
-  margin-top: 0.5rem;
+}
+
+.timestamp {
+  font-size: 0.7rem;
+  padding: 0.2rem 0.5rem;
+  border-radius: 10px;
+  cursor: default;
+}
+
+.completed-timestamp {
+  color: #00b894;
+  background: #d4f5ec;
+}
+
+.archived-timestamp {
+  color: #6c5ce7;
+  background: #e8e4ff;
 }
 </style>

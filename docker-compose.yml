@@ -10,6 +10,7 @@ services:
       - ./backend/todo.db:/app/todo.db
     environment:
       - NODE_ENV=production
+      - TZ=Pacific/Auckland
     restart: unless-stopped
 
   frontend:
