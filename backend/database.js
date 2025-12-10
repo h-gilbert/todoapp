@@ -268,6 +268,24 @@ db.serialize(() => {
     }
   });
 
+  // Migration: Add archived column to projects for archiving whole projects
+  db.run(`ALTER TABLE projects ADD COLUMN archived BOOLEAN DEFAULT 0`, (err) => {
+    if (err && !err.message.includes('duplicate column')) {
+      console.error('Migration error:', err);
+    } else if (!err) {
+      console.log('Added archived column to projects table');
+    }
+  });
+
+  // Migration: Add archived_at timestamp for projects
+  db.run(`ALTER TABLE projects ADD COLUMN archived_at DATETIME`, (err) => {
+    if (err && !err.message.includes('duplicate column')) {
+      console.error('Migration error:', err);
+    } else if (!err) {
+      console.log('Added archived_at column to projects table');
+    }
+  });
+
   // Migration: Add user attribution columns to sections (for shared projects visibility)
   db.run(`ALTER TABLE sections ADD COLUMN created_by_user_id INTEGER REFERENCES users(id)`, (err) => {
     if (err && !err.message.includes('duplicate column')) {

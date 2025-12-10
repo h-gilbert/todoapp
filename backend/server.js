@@ -720,21 +720,21 @@ app.get('/api/users/:userId/projects', async (req, res) => {
       return res.json(cached);
     }
 
-    // Get owned projects
+    // Get owned projects (excluding archived)
     const ownedProjects = await dbAll(
-      'SELECT *, user_id as owner_id FROM projects WHERE user_id = ? ORDER BY order_index ASC',
+      'SELECT *, user_id as owner_id FROM projects WHERE user_id = ? AND (archived = 0 OR archived IS NULL) ORDER BY order_index ASC',
       [userId]
     );
     // Add is_owner flag as boolean
     ownedProjects.forEach(p => p.is_owner = true);
 
-    // Get shared projects with owner info
+    // Get shared projects with owner info (excluding archived)
     const sharedProjects = await dbAll(
       `SELECT p.*, p.user_id as owner_id, u.username as owner_name
        FROM project_shares ps
        JOIN projects p ON ps.project_id = p.id
        JOIN users u ON p.user_id = u.id
-       WHERE ps.user_id = ?
+       WHERE ps.user_id = ? AND (p.archived = 0 OR p.archived IS NULL)
        ORDER BY p.name ASC`,
       [userId]
     );
@@ -890,6 +890,64 @@ app.post('/api/projects/reorder', async (req, res) => {
     res.json({ success: true });
   } catch (error) {
     console.error('Reorder projects error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Archive project
+app.post('/api/projects/:id/archive', async (req, res) => {
+  try {
+    const { id } = req.params;
+    await dbRun(
+      'UPDATE projects SET archived = 1, archived_at = CURRENT_TIMESTAMP WHERE id = ?',
+      [id]
+    );
+
+    // Invalidate projects cache
+    invalidateCache('projects');
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Archive project error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Unarchive project
+app.post('/api/projects/:id/unarchive', async (req, res) => {
+  try {
+    const { id } = req.params;
+    await dbRun(
+      'UPDATE projects SET archived = 0, archived_at = NULL WHERE id = ?',
+      [id]
+    );
+
+    // Invalidate projects cache
+    invalidateCache('projects');
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Unarchive project error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Get archived projects for a user
+app.get('/api/users/:userId/archived-projects', async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const projects = await dbAll(
+      `SELECT p.*,
+        (SELECT COUNT(*) FROM sections s WHERE s.project_id = p.id AND s.archived = 0) as sectionCount,
+        (SELECT COUNT(*) FROM tasks t JOIN sections s ON t.section_id = s.id WHERE s.project_id = p.id AND t.archived = 0) as taskCount
+       FROM projects p
+       WHERE p.user_id = ? AND p.archived = 1
+       ORDER BY p.archived_at DESC`,
+      [userId]
+    );
+    res.json(projects);
+  } catch (error) {
+    console.error('Get archived projects error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

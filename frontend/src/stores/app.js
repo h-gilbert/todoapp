@@ -156,6 +156,29 @@ export const useAppStore = defineStore('app', () => {
     }
   }
 
+  async function archiveProject(id) {
+    await fetch(`${API_URL}/projects/${id}/archive`, { method: 'POST' })
+    projects.value = projects.value.filter(p => p.id !== id)
+    if (currentProject.value?.id === id) {
+      currentProject.value = null
+      sections.value = []
+      tasks.value = {}
+      localStorage.removeItem('todo_current_project_id')
+    }
+  }
+
+  async function unarchiveProject(id) {
+    await fetch(`${API_URL}/projects/${id}/unarchive`, { method: 'POST' })
+    // Reload projects to include the unarchived one
+    await loadProjects()
+  }
+
+  async function loadArchivedProjects() {
+    if (!user.value) return []
+    const response = await fetch(`${API_URL}/users/${user.value.id}/archived-projects`)
+    return await response.json()
+  }
+
   async function reorderProjects(projectIds) {
     await fetch(`${API_URL}/projects/reorder`, {
       method: 'POST',
@@ -739,6 +762,9 @@ export const useAppStore = defineStore('app', () => {
     createProject,
     updateProject,
     deleteProject,
+    archiveProject,
+    unarchiveProject,
+    loadArchivedProjects,
     reorderProjects,
     selectProject,
     loadSections,

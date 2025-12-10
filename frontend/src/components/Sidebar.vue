@@ -110,8 +110,9 @@ const contextMenuItems = computed(() => {
     items.push({ label: 'Edit', action: 'rename' })
   }
 
-  // Only owners can delete projects
+  // Only owners can archive and delete projects
   if (project?.is_owner) {
+    items.push({ label: 'Archive', action: 'archive' })
     items.push({ label: 'Delete', action: 'delete' })
   }
 
@@ -150,8 +151,12 @@ async function handleContextMenuSelect(item) {
     showShareModal.value = true
   } else if (item.action === 'rename') {
     editingProject.value = project
+  } else if (item.action === 'archive') {
+    if (confirm(`Are you sure you want to archive "${project.name}"? You can restore it later from the archived projects.`)) {
+      await store.archiveProject(project.id)
+    }
   } else if (item.action === 'delete') {
-    if (confirm(`Are you sure you want to delete "${project.name}"?`)) {
+    if (confirm(`Are you sure you want to delete "${project.name}"? This cannot be undone.`)) {
       await store.deleteProject(project.id)
     }
   }
