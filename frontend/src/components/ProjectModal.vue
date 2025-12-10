@@ -36,7 +36,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, nextTick } from 'vue'
+import { ref, onMounted, onUnmounted, nextTick } from 'vue'
 
 const props = defineProps({
   project: {
@@ -54,7 +54,23 @@ const inputRef = ref(null)
 onMounted(async () => {
   await nextTick()
   inputRef.value?.focus()
+
+  // Add keyboard shortcut listener
+  window.addEventListener('keydown', handleKeyDown)
 })
+
+onUnmounted(() => {
+  // Clean up keyboard shortcut listener
+  window.removeEventListener('keydown', handleKeyDown)
+})
+
+function handleKeyDown(event) {
+  // Check for CMD+Enter (Mac) or Ctrl+Enter (Windows/Linux)
+  if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+    event.preventDefault()
+    handleSubmit()
+  }
+}
 
 function handleSubmit() {
   if (name.value.trim()) {
