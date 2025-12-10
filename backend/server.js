@@ -602,8 +602,26 @@ app.get('/api/users/:userId/search', async (req, res) => {
       [userId, searchTerm]
     );
 
-    // Combine and return results
-    const results = [...taskResults, ...sectionResults];
+    // Search projects (name and description)
+    const projectResults = await dbAll(
+      `SELECT
+        NULL as taskId,
+        NULL as taskTitle,
+        p.description as description,
+        NULL as sectionId,
+        NULL as sectionName,
+        p.id as projectId,
+        p.name as projectName,
+        'project' as type
+       FROM projects p
+       WHERE p.user_id = ?
+         AND (p.name LIKE ? OR p.description LIKE ?)
+       ORDER BY p.name`,
+      [userId, searchTerm, searchTerm]
+    );
+
+    // Combine and return results (projects first, then sections, then tasks)
+    const results = [...projectResults, ...sectionResults, ...taskResults];
     res.json(results);
   } catch (error) {
     console.error('Search error:', error);

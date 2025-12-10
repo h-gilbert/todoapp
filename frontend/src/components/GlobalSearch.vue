@@ -22,19 +22,22 @@
           <div v-if="showResults && results.length > 0" class="global-search-results">
             <div
               v-for="result in results"
-              :key="`${result.type}-${result.sectionId}-${result.taskId}`"
+              :key="`${result.type}-${result.projectId}-${result.sectionId}-${result.taskId}`"
               @click.stop="navigateToResult(result)"
               class="global-search-result-item"
             >
               <div class="result-path">
                 <span class="project-name">{{ result.projectName }}</span>
-                <span class="separator">›</span>
-                <span class="section-name">{{ result.sectionName }}</span>
+                <template v-if="result.type !== 'project'">
+                  <span class="separator">›</span>
+                  <span class="section-name">{{ result.sectionName }}</span>
+                </template>
                 <span v-if="result.type === 'task'" class="separator">›</span>
                 <span v-if="result.type === 'task'" class="task-indicator">Task</span>
+                <span v-if="result.type === 'project'" class="project-indicator">Project</span>
               </div>
               <div class="result-title">
-                {{ result.type === 'task' ? result.taskTitle : result.sectionName }}
+                {{ result.type === 'task' ? result.taskTitle : (result.type === 'project' ? result.projectName : result.sectionName) }}
               </div>
               <div v-if="result.description && result.description.trim()" class="result-description">
                 {{ truncateDescription(result.description) }}
@@ -111,6 +114,11 @@ const navigateToResult = async (result) => {
     searchQuery.value = '';
     results.value = [];
     showResults.value = false;
+
+    // For project results, just selecting the project is enough
+    if (result.type === 'project') {
+      return;
+    }
 
     // Wait for sections to load and navigate
     setTimeout(() => {
@@ -275,6 +283,14 @@ watch(() => isExpanded.value, (newVal) => {
   background-color: #dfe6e9;
   border-radius: 3px;
   color: #636e72;
+}
+
+.project-indicator {
+  font-size: 10px;
+  padding: 2px 6px;
+  background-color: #a29bfe;
+  border-radius: 3px;
+  color: white;
 }
 
 .result-title {
