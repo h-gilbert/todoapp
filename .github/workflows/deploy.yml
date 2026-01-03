@@ -1,97 +1,122 @@
-name: Deploy Todo App to Production
+name: Deploy All
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
+    inputs:
+      deploy_frontend:
+        description: 'Deploy frontend'
+        required: true
+        default: true
+        type: boolean
+      deploy_backend:
+        description: 'Deploy backend'
+        required: true
+        default: true
+        type: boolean
+
+env:
+  REGISTRY: ghcr.io
 
 jobs:
-  build-and-deploy:
+  build-backend:
+    if: ${{ inputs.deploy_backend }}
     runs-on: ubuntu-latest
-
+    permissions:
+      contents: read
+      packages: write
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
         with:
-          node-version: '20'
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build frontend
-        working-directory: ./frontend
-        run: |
-          npm ci
-          npm run build
-
-      - name: Prepare deployment package
-        run: |
-          mkdir -p deploy-package/frontend
-          mkdir -p deploy-package/backend
-          cp -r frontend/dist deploy-package/frontend/
-          cp -r backend/* deploy-package/backend/
-          cp docker-compose.production.yml deploy-package/
-          cp nginx-config-todo.conf deploy-package/
-
-      - name: Create deployment tarball
-        run: |
-          tar -czf todo-app-deploy.tar.gz -C deploy-package .
-
-      - name: Install SSH key
-        uses: webfactory/ssh-agent@v0.9.0
+      - name: Build and push backend
+        uses: docker/build-push-action@v5
         with:
-          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
+          context: ./backend
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ github.repository_owner }}/todo-backend:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
-      - name: Add server to known hosts
-        run: |
-          mkdir -p ~/.ssh
-          ssh-keyscan -H ${{ secrets.SERVER_IP }} >> ~/.ssh/known_hosts
+  build-frontend:
+    if: ${{ inputs.deploy_frontend }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push frontend
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ github.repository_owner }}/todo-frontend:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    needs: [build-backend, build-frontend]
+    if: always() && (needs.build-backend.result == 'success' || needs.build-frontend.result == 'success' || needs.build-backend.result == 'skipped' || needs.build-frontend.result == 'skipped')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup Tailscale
+        uses: tailscale/github-action@v2
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
 
       - name: Deploy to server
-        env:
-          SERVER_IP: ${{ secrets.SERVER_IP }}
-          SERVER_USER: ${{ secrets.SERVER_USER }}
-        run: |
-          # Create deployment directory if it doesn't exist
-          ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 ${SERVER_USER}@${SERVER_IP} "mkdir -p /mnt/user/appdata/todo-app"
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_TAILSCALE_IP }}
+          username: fred
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            set -e
+            echo "Deploying todo-app..."
 
-          # Copy deployment package to server
-          scp -o ServerAliveInterval=30 -o ServerAliveCountMax=3 todo-app-deploy.tar.gz ${SERVER_USER}@${SERVER_IP}:/tmp/
+            cd /opt/docker/webapps
 
-          # Extract and deploy on server
-          ssh -o ServerAliveInterval=10 -o ServerAliveCountMax=6 -o ConnectTimeout=30 -o BatchMode=yes ${SERVER_USER}@${SERVER_IP} "cd /mnt/user/appdata/todo-app && tar -xzf /tmp/todo-app-deploy.tar.gz && rm /tmp/todo-app-deploy.tar.gz && cp nginx-config-todo.conf /mnt/user/appdata/multi-site-nginx/conf.d/todo.conf && docker-compose -f docker-compose.production.yml build && docker-compose -f docker-compose.production.yml up -d && (nohup docker restart multi-site-nginx > /dev/null 2>&1 &) && echo Done"
+            # Deploy backend if requested
+            if [ "${{ inputs.deploy_backend }}" = "true" ]; then
+              echo "Pulling and restarting backend..."
+              docker pull ghcr.io/h-gilbert/todo-backend:latest
+              docker compose up -d --no-deps todo-backend
+            fi
 
-      - name: Verify deployment
-        env:
-          SERVER_IP: ${{ secrets.SERVER_IP }}
-          SERVER_USER: ${{ secrets.SERVER_USER }}
-        run: |
-          ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=30 -o BatchMode=yes ${SERVER_USER}@${SERVER_IP} 'bash -s' << 'ENDSSH'
-            echo "Checking container status..."
-            docker ps | grep todo-app-backend || true
+            # Deploy frontend if requested
+            if [ "${{ inputs.deploy_frontend }}" = "true" ]; then
+              echo "Pulling and restarting frontend..."
+              docker pull ghcr.io/h-gilbert/todo-frontend:latest
+              docker compose up -d --no-deps todo-frontend
+            fi
 
-            echo "Waiting for containers to be ready..."
+            # Wait for services to start
             sleep 5
 
-            echo "Checking backend health..."
-            for i in 1 2 3; do
-              if curl -f -s http://192.168.1.2:3500/api/health > /dev/null 2>&1; then
-                echo "Backend is healthy!"
-                exit 0
-              else
-                echo "Attempt $i: Backend not ready yet, waiting..."
-                sleep 2
-              fi
-            done
+            # Show status
+            echo "Container status:"
+            docker ps --filter "name=todo-" --format "table {{.Names}}\t{{.Status}}"
 
-            echo "Health check didn't pass, but deployment completed."
-            exit 0
-          ENDSSH
-
-      - name: Deployment summary
-        run: |
-          echo "✅ Deployment completed!"
-          echo "🌐 Frontend: https://todo.hamishgilbert.com"
-          echo "🔧 Backend: Running on port 3500"
-          echo "📝 Check logs: docker logs todo-app-backend"
+            echo "Deployment complete!"
