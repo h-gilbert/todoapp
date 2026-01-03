@@ -1919,7 +1919,7 @@ app.delete('/api/tasks/:taskId/labels/:labelId', async (req, res) => {
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {
-  res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
+  res.status(200).json({ status: 'ok', version: '1.0.1', timestamp: new Date().toISOString() });
 });
 
 app.listen(PORT, () => {

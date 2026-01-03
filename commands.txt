@@ -1,0 +1,27 @@
+# MCP Server Configuration for Claude Code
+
+## Add the MCP Server to Claude Code
+
+Run this command in your terminal:
+
+claude mcp add --transport stdio todo-app --env TODO_APP_URL=https://todo.hamishgilbert.com --env API_TOKEN=308844f75a8289169e798d51a7edc3570a45386572d663c8762fbccd2d1bf4f4 --env USER_ID=1 -- node /Users/hamishgilbert/Downloads/Projects/todo-app/mcp-server/dist/index.js
+
+## Verify the MCP Server was added
+
+claude mcp list
+
+## Test the MCP Server
+
+After adding, test by asking Claude: "List my projects from the todo app"
+
+## Remove the MCP Server (if needed)
+
+claude mcp remove todo-app
+
+## Other useful MCP commands
+
+# Get details about the todo-app MCP server
+claude mcp get todo-app
+
+# Import from Claude Desktop (if you have it installed)
+claude mcp add-from-claude-desktop
