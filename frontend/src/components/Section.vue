@@ -210,7 +210,6 @@ async function handleMenuSelect(item) {
   font-size: 1rem;
   font-weight: 600;
   color: #2d3436;
-  text-transform: capitalize;
   margin: 0;
 }
 
