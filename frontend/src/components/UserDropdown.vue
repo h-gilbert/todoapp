@@ -67,8 +67,9 @@ function handleChangePassword() {
   showChangePasswordModal.value = true
 }
 
-function handleLogout() {
-  store.logout()
+async function handleLogout() {
+  isOpen.value = false
+  await store.logout()
   router.push('/')
 }
 
