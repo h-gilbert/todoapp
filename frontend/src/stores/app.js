@@ -51,6 +51,12 @@ export const useAppStore = defineStore('app', () => {
 
     let response = await fetch(url, { ...options, headers })
 
+    // Handle rate limiting
+    if (response.status === 429) {
+      const retryAfter = response.headers.get('Retry-After') || '60'
+      throw new Error(`Rate limit exceeded. Please wait ${retryAfter} seconds and try again.`)
+    }
+
     // If token expired, try to refresh
     if (response.status === 401 || response.status === 403) {
       const refreshed = await tryRefreshToken()
@@ -190,7 +196,16 @@ export const useAppStore = defineStore('app', () => {
   async function loadProjects() {
     if (!user.value) return
     const response = await authFetch(`${API_URL}/users/${user.value.id}/projects`)
-    projects.value = await response.json()
+    const data = await response.json()
+
+    if (!response.ok) {
+      throw new Error(data.error || 'Failed to load projects')
+    }
+
+    if (!Array.isArray(data)) {
+      throw new Error('Invalid response from server')
+    }
+    projects.value = data
 
     // Restore last selected project if exists
     const savedProjectId = localStorage.getItem('todo_current_project_id')
