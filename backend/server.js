@@ -13,7 +13,7 @@ const helmet = require('helmet');
 const db = require('./database');
 
 const app = express();
-const PORT = 3500;
+const PORT = process.env.PORT || 3500;
 
 // JWT Configuration
 const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(64).toString('hex');
