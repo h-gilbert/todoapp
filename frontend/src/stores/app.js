@@ -5,6 +5,8 @@ const API_URL = '/api'
 
 export const useAppStore = defineStore('app', () => {
   const user = ref(null)
+  const accessToken = ref(null)
+  const refreshToken = ref(null)
   const projects = ref([])
   const currentProject = ref(null)
   const sections = ref([])
@@ -14,14 +16,77 @@ export const useAppStore = defineStore('app', () => {
   const taskLabels = ref({}) // taskId -> [labels]
   const subtasks = ref({}) // parentTaskId -> [subtasks]
 
-  // Initialize user from localStorage on store creation
+  // Initialize from localStorage on store creation
   const savedUser = localStorage.getItem('todo_user')
-  if (savedUser) {
+  const savedAccessToken = localStorage.getItem('todo_access_token')
+  const savedRefreshToken = localStorage.getItem('todo_refresh_token')
+  if (savedUser && savedAccessToken) {
     try {
       user.value = JSON.parse(savedUser)
+      accessToken.value = savedAccessToken
+      refreshToken.value = savedRefreshToken
     } catch (e) {
       console.error('Failed to parse saved user', e)
       localStorage.removeItem('todo_user')
+      localStorage.removeItem('todo_access_token')
+      localStorage.removeItem('todo_refresh_token')
+    }
+  }
+
+  // Helper function to make authenticated requests
+  async function authFetch(url, options = {}) {
+    if (!accessToken.value) {
+      throw new Error('Not authenticated')
+    }
+
+    const headers = {
+      ...options.headers,
+      'Authorization': `Bearer ${accessToken.value}`
+    }
+
+    // Don't set Content-Type for FormData (file uploads)
+    if (!(options.body instanceof FormData)) {
+      headers['Content-Type'] = headers['Content-Type'] || 'application/json'
+    }
+
+    let response = await fetch(url, { ...options, headers })
+
+    // If token expired, try to refresh
+    if (response.status === 401 || response.status === 403) {
+      const refreshed = await tryRefreshToken()
+      if (refreshed) {
+        headers['Authorization'] = `Bearer ${accessToken.value}`
+        response = await fetch(url, { ...options, headers })
+      } else {
+        // Refresh failed, logout user
+        logout()
+        throw new Error('Session expired')
+      }
+    }
+
+    return response
+  }
+
+  // Try to refresh the access token
+  async function tryRefreshToken() {
+    if (!refreshToken.value) return false
+
+    try {
+      const response = await fetch(`${API_URL}/users/refresh-token`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refreshToken: refreshToken.value })
+      })
+
+      if (!response.ok) return false
+
+      const data = await response.json()
+      accessToken.value = data.accessToken
+      localStorage.setItem('todo_access_token', data.accessToken)
+      return true
+    } catch (error) {
+      console.error('Token refresh failed:', error)
+      return false
     }
   }
 
@@ -38,10 +103,15 @@ export const useAppStore = defineStore('app', () => {
       throw new Error(error.error || 'Registration failed')
     }
 
-    user.value = await response.json()
+    const data = await response.json()
+    user.value = data.user
+    accessToken.value = data.accessToken
+    refreshToken.value = data.refreshToken
 
-    // Save user to localStorage for persistence
+    // Save to localStorage for persistence
     localStorage.setItem('todo_user', JSON.stringify(user.value))
+    localStorage.setItem('todo_access_token', data.accessToken)
+    localStorage.setItem('todo_refresh_token', data.refreshToken)
 
     await loadProjects()
     return user.value
@@ -59,21 +129,24 @@ export const useAppStore = defineStore('app', () => {
       throw new Error(error.error || 'Login failed')
     }
 
-    user.value = await response.json()
+    const data = await response.json()
+    user.value = data.user
+    accessToken.value = data.accessToken
+    refreshToken.value = data.refreshToken
 
-    // Save user to localStorage for persistence
+    // Save to localStorage for persistence
     localStorage.setItem('todo_user', JSON.stringify(user.value))
+    localStorage.setItem('todo_access_token', data.accessToken)
+    localStorage.setItem('todo_refresh_token', data.refreshToken)
 
     await loadProjects()
     return user.value
   }
 
   async function changePassword(currentPassword, newPassword) {
-    const response = await fetch(`${API_URL}/users/change-password`, {
+    const response = await authFetch(`${API_URL}/users/change-password`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        userId: user.value.id,
         currentPassword,
         newPassword
       })
@@ -87,20 +160,36 @@ export const useAppStore = defineStore('app', () => {
     return await response.json()
   }
 
-  function logout() {
+  async function logout() {
+    // Notify server to invalidate refresh token
+    if (refreshToken.value) {
+      try {
+        await authFetch(`${API_URL}/users/logout`, {
+          method: 'POST',
+          body: JSON.stringify({ refreshToken: refreshToken.value })
+        })
+      } catch (e) {
+        // Ignore errors during logout
+      }
+    }
+
     user.value = null
+    accessToken.value = null
+    refreshToken.value = null
     projects.value = []
     currentProject.value = null
     sections.value = []
     tasks.value = {}
     localStorage.removeItem('todo_user')
+    localStorage.removeItem('todo_access_token')
+    localStorage.removeItem('todo_refresh_token')
     localStorage.removeItem('todo_current_project_id')
   }
 
   // Project actions
   async function loadProjects() {
     if (!user.value) return
-    const response = await fetch(`${API_URL}/users/${user.value.id}/projects`)
+    const response = await authFetch(`${API_URL}/users/${user.value.id}/projects`)
     projects.value = await response.json()
 
     // Restore last selected project if exists
@@ -117,10 +206,9 @@ export const useAppStore = defineStore('app', () => {
   }
 
   async function createProject(name, description = '') {
-    const response = await fetch(`${API_URL}/projects`, {
+    const response = await authFetch(`${API_URL}/projects`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId: user.value.id, name, description })
+      body: JSON.stringify({ name, description })
     })
     const project = await response.json()
     projects.value.push(project)
@@ -132,9 +220,8 @@ export const useAppStore = defineStore('app', () => {
     if (name !== undefined) updates.name = name
     if (description !== undefined) updates.description = description
 
-    const response = await fetch(`${API_URL}/projects/${id}`, {
+    const response = await authFetch(`${API_URL}/projects/${id}`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(updates)
     })
     const updated = await response.json()
@@ -146,7 +233,7 @@ export const useAppStore = defineStore('app', () => {
   }
 
   async function deleteProject(id) {
-    await fetch(`${API_URL}/projects/${id}`, { method: 'DELETE' })
+    await authFetch(`${API_URL}/projects/${id}`, { method: 'DELETE' })
     projects.value = projects.value.filter(p => p.id !== id)
     if (currentProject.value?.id === id) {
       currentProject.value = null
@@ -157,7 +244,7 @@ export const useAppStore = defineStore('app', () => {
   }
 
   async function archiveProject(id) {
-    await fetch(`${API_URL}/projects/${id}/archive`, { method: 'POST' })
+    await authFetch(`${API_URL}/projects/${id}/archive`, { method: 'POST' })
     projects.value = projects.value.filter(p => p.id !== id)
     if (currentProject.value?.id === id) {
       currentProject.value = null
@@ -168,21 +255,20 @@ export const useAppStore = defineStore('app', () => {
   }
 
   async function unarchiveProject(id) {
-    await fetch(`${API_URL}/projects/${id}/unarchive`, { method: 'POST' })
+    await authFetch(`${API_URL}/projects/${id}/unarchive`, { method: 'POST' })
     // Reload projects to include the unarchived one
     await loadProjects()
   }
 
   async function loadArchivedProjects() {
     if (!user.value) return []
-    const response = await fetch(`${API_URL}/users/${user.value.id}/archived-projects`)
+    const response = await authFetch(`${API_URL}/users/${user.value.id}/archived-projects`)
     return await response.json()
   }
 
   async function reorderProjects(projectIds) {
-    await fetch(`${API_URL}/projects/reorder`, {
+    await authFetch(`${API_URL}/projects/reorder`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ projectIds })
     })
   }
@@ -196,7 +282,7 @@ export const useAppStore = defineStore('app', () => {
 
   // Section actions
   async function loadSections(projectId) {
-    const response = await fetch(`${API_URL}/projects/${projectId}/sections`)
+    const response = await authFetch(`${API_URL}/projects/${projectId}/sections`)
     sections.value = await response.json()
 
     // Load tasks for all sections
@@ -207,10 +293,9 @@ export const useAppStore = defineStore('app', () => {
 
   async function createSection(name) {
     if (!currentProject.value) return
-    const response = await fetch(`${API_URL}/sections`, {
+    const response = await authFetch(`${API_URL}/sections`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ projectId: currentProject.value.id, name, userId: user.value?.id })
+      body: JSON.stringify({ projectId: currentProject.value.id, name })
     })
     const section = await response.json()
     sections.value.push(section)
@@ -219,9 +304,8 @@ export const useAppStore = defineStore('app', () => {
   }
 
   async function updateSection(id, name) {
-    const response = await fetch(`${API_URL}/sections/${id}`, {
+    const response = await authFetch(`${API_URL}/sections/${id}`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name })
     })
     const updated = await response.json()
@@ -236,7 +320,7 @@ export const useAppStore = defineStore('app', () => {
     // Count tasks being deleted
     const deletedTaskCount = tasks.value[id]?.length || 0
 
-    await fetch(`${API_URL}/sections/${id}`, { method: 'DELETE' })
+    await authFetch(`${API_URL}/sections/${id}`, { method: 'DELETE' })
     sections.value = sections.value.filter(s => s.id !== id)
     delete tasks.value[id]
 
@@ -251,18 +335,15 @@ export const useAppStore = defineStore('app', () => {
   }
 
   async function reorderSections(sectionIds) {
-    await fetch(`${API_URL}/sections/reorder`, {
+    await authFetch(`${API_URL}/sections/reorder`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ sectionIds })
     })
   }
 
   async function archiveSection(id) {
-    await fetch(`${API_URL}/sections/${id}/archive`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId: user.value?.id })
+    await authFetch(`${API_URL}/sections/${id}/archive`, {
+      method: 'POST'
     })
 
     // Count tasks being archived
@@ -283,7 +364,7 @@ export const useAppStore = defineStore('app', () => {
   }
 
   async function unarchiveSection(sectionId) {
-    const response = await fetch(`${API_URL}/sections/${sectionId}/unarchive`, {
+    const response = await authFetch(`${API_URL}/sections/${sectionId}/unarchive`, {
       method: 'POST'
     })
     const section = await response.json()
@@ -310,15 +391,14 @@ export const useAppStore = defineStore('app', () => {
 
   // Task actions
   async function loadTasks(sectionId) {
-    const response = await fetch(`${API_URL}/sections/${sectionId}/tasks`)
+    const response = await authFetch(`${API_URL}/sections/${sectionId}/tasks`)
     tasks.value[sectionId] = await response.json()
   }
 
   async function createTask(sectionId, title, description, parent_task_id = null) {
-    const response = await fetch(`${API_URL}/tasks`, {
+    const response = await authFetch(`${API_URL}/tasks`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ sectionId, title, description, parent_task_id, userId: user.value?.id })
+      body: JSON.stringify({ sectionId, title, description, parent_task_id })
     })
     const task = await response.json()
 
@@ -347,10 +427,9 @@ export const useAppStore = defineStore('app', () => {
   }
 
   async function updateTask(id, updates) {
-    const response = await fetch(`${API_URL}/tasks/${id}`, {
+    const response = await authFetch(`${API_URL}/tasks/${id}`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...updates, userId: user.value?.id })
+      body: JSON.stringify(updates)
     })
     const updated = await response.json()
 
@@ -377,10 +456,8 @@ export const useAppStore = defineStore('app', () => {
   }
 
   async function archiveTask(id) {
-    await fetch(`${API_URL}/tasks/${id}/archive`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId: user.value?.id })
+    await authFetch(`${API_URL}/tasks/${id}/archive`, {
+      method: 'POST'
     })
 
     // Remove from current tasks
@@ -399,7 +476,7 @@ export const useAppStore = defineStore('app', () => {
   }
 
   async function deleteTask(id) {
-    await fetch(`${API_URL}/tasks/${id}`, { method: 'DELETE' })
+    await authFetch(`${API_URL}/tasks/${id}`, { method: 'DELETE' })
 
     // Remove from current tasks
     for (const sectionId in tasks.value) {
@@ -417,9 +494,8 @@ export const useAppStore = defineStore('app', () => {
   }
 
   async function moveTask(taskId, newSectionId) {
-    const response = await fetch(`${API_URL}/tasks/${taskId}/move`, {
+    const response = await authFetch(`${API_URL}/tasks/${taskId}/move`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ sectionId: newSectionId })
     })
     const updated = await response.json()
@@ -445,9 +521,8 @@ export const useAppStore = defineStore('app', () => {
   async function moveTaskToSection(taskId, newSectionId, targetIndex) {
     // Call API to move task first
     try {
-      const response = await fetch(`${API_URL}/tasks/${taskId}/move`, {
+      const response = await authFetch(`${API_URL}/tasks/${taskId}/move`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sectionId: newSectionId, targetIndex })
       })
 
@@ -483,9 +558,8 @@ export const useAppStore = defineStore('app', () => {
   }
 
   async function reorderTasks(sectionId, taskIds) {
-    await fetch(`${API_URL}/tasks/reorder`, {
+    await authFetch(`${API_URL}/tasks/reorder`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ taskIds })
     })
 
@@ -498,18 +572,18 @@ export const useAppStore = defineStore('app', () => {
 
   async function getArchivedTasks() {
     if (!currentProject.value) return []
-    const response = await fetch(`${API_URL}/projects/${currentProject.value.id}/archived`)
+    const response = await authFetch(`${API_URL}/projects/${currentProject.value.id}/archived`)
     return await response.json()
   }
 
   async function getArchivedSections() {
     if (!currentProject.value) return []
-    const response = await fetch(`${API_URL}/projects/${currentProject.value.id}/archived-sections`)
+    const response = await authFetch(`${API_URL}/projects/${currentProject.value.id}/archived-sections`)
     return await response.json()
   }
 
   async function unarchiveTask(taskId) {
-    const response = await fetch(`${API_URL}/tasks/${taskId}/unarchive`, {
+    const response = await authFetch(`${API_URL}/tasks/${taskId}/unarchive`, {
       method: 'POST'
     })
     const task = await response.json()
@@ -536,14 +610,14 @@ export const useAppStore = defineStore('app', () => {
   async function search(query) {
     if (!user.value || !query || query.trim().length === 0) return []
 
-    const response = await fetch(`${API_URL}/users/${user.value.id}/search?q=${encodeURIComponent(query)}`)
+    const response = await authFetch(`${API_URL}/users/${user.value.id}/search?q=${encodeURIComponent(query)}`)
     return await response.json()
   }
 
   async function searchProject(projectId, query) {
     if (!query || query.trim().length === 0) return []
 
-    const response = await fetch(`${API_URL}/projects/${projectId}/search?q=${encodeURIComponent(query)}`)
+    const response = await authFetch(`${API_URL}/projects/${projectId}/search?q=${encodeURIComponent(query)}`)
     return await response.json()
   }
 
@@ -554,7 +628,7 @@ export const useAppStore = defineStore('app', () => {
       formData.append('photos', file)
     }
 
-    const response = await fetch(`${API_URL}/tasks/${taskId}/photos`, {
+    const response = await authFetch(`${API_URL}/tasks/${taskId}/photos`, {
       method: 'POST',
       body: formData
     })
@@ -567,7 +641,7 @@ export const useAppStore = defineStore('app', () => {
       return photoCache.value[taskId]
     }
 
-    const response = await fetch(`${API_URL}/tasks/${taskId}/photos`)
+    const response = await authFetch(`${API_URL}/tasks/${taskId}/photos`)
     const photos = await response.json()
 
     // Cache the photos
@@ -577,7 +651,7 @@ export const useAppStore = defineStore('app', () => {
   }
 
   async function deletePhoto(photoId, taskId) {
-    await fetch(`${API_URL}/photos/${photoId}`, { method: 'DELETE' })
+    await authFetch(`${API_URL}/photos/${photoId}`, { method: 'DELETE' })
 
     // Invalidate cache for this task
     if (photoCache.value[taskId]) {
@@ -593,10 +667,9 @@ export const useAppStore = defineStore('app', () => {
 
   // Project sharing actions
   async function shareProject(projectId, username) {
-    const response = await fetch(`${API_URL}/projects/${projectId}/share`, {
+    const response = await authFetch(`${API_URL}/projects/${projectId}/share`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, userId: user.value.id })
+      body: JSON.stringify({ username })
     })
 
     if (!response.ok) {
@@ -608,12 +681,12 @@ export const useAppStore = defineStore('app', () => {
   }
 
   async function getProjectShares(projectId) {
-    const response = await fetch(`${API_URL}/projects/${projectId}/shares`)
+    const response = await authFetch(`${API_URL}/projects/${projectId}/shares`)
     return await response.json()
   }
 
   async function removeProjectShare(projectId, shareUserId) {
-    const response = await fetch(`${API_URL}/projects/${projectId}/shares/${shareUserId}?userId=${user.value.id}`, {
+    const response = await authFetch(`${API_URL}/projects/${projectId}/shares/${shareUserId}`, {
       method: 'DELETE'
     })
 
@@ -628,15 +701,14 @@ export const useAppStore = defineStore('app', () => {
   // Label actions
   async function loadLabels() {
     if (!user.value) return
-    const response = await fetch(`${API_URL}/users/${user.value.id}/labels`)
+    const response = await authFetch(`${API_URL}/users/${user.value.id}/labels`)
     labels.value = await response.json()
   }
 
   async function createLabel(name, color = '#3B82F6') {
-    const response = await fetch(`${API_URL}/labels`, {
+    const response = await authFetch(`${API_URL}/labels`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userId: user.value.id, name, color })
+      body: JSON.stringify({ name, color })
     })
     const label = await response.json()
     labels.value.push(label)
@@ -644,9 +716,8 @@ export const useAppStore = defineStore('app', () => {
   }
 
   async function updateLabel(id, updates) {
-    const response = await fetch(`${API_URL}/labels/${id}`, {
+    const response = await authFetch(`${API_URL}/labels/${id}`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(updates)
     })
     const updated = await response.json()
@@ -658,7 +729,7 @@ export const useAppStore = defineStore('app', () => {
   }
 
   async function deleteLabel(id) {
-    await fetch(`${API_URL}/labels/${id}`, { method: 'DELETE' })
+    await authFetch(`${API_URL}/labels/${id}`, { method: 'DELETE' })
     labels.value = labels.value.filter(l => l.id !== id)
     // Also remove from all tasks
     for (const taskId in taskLabels.value) {
@@ -670,14 +741,14 @@ export const useAppStore = defineStore('app', () => {
     if (!forceRefresh && taskLabels.value[taskId]) {
       return taskLabels.value[taskId]
     }
-    const response = await fetch(`${API_URL}/tasks/${taskId}/labels`)
+    const response = await authFetch(`${API_URL}/tasks/${taskId}/labels`)
     const taskLabelsList = await response.json()
     taskLabels.value[taskId] = taskLabelsList
     return taskLabelsList
   }
 
   async function addLabelToTask(taskId, labelId) {
-    const response = await fetch(`${API_URL}/tasks/${taskId}/labels/${labelId}`, {
+    const response = await authFetch(`${API_URL}/tasks/${taskId}/labels/${labelId}`, {
       method: 'POST'
     })
     const result = await response.json()
@@ -689,7 +760,7 @@ export const useAppStore = defineStore('app', () => {
   }
 
   async function removeLabelFromTask(taskId, labelId) {
-    await fetch(`${API_URL}/tasks/${taskId}/labels/${labelId}`, { method: 'DELETE' })
+    await authFetch(`${API_URL}/tasks/${taskId}/labels/${labelId}`, { method: 'DELETE' })
     if (taskLabels.value[taskId]) {
       taskLabels.value[taskId] = taskLabels.value[taskId].filter(l => l.id !== labelId)
     }
@@ -700,15 +771,14 @@ export const useAppStore = defineStore('app', () => {
     if (!forceRefresh && subtasks.value[parentTaskId]) {
       return subtasks.value[parentTaskId]
     }
-    const response = await fetch(`${API_URL}/tasks/${parentTaskId}/subtasks`)
+    const response = await authFetch(`${API_URL}/tasks/${parentTaskId}/subtasks`)
     subtasks.value[parentTaskId] = await response.json()
     return subtasks.value[parentTaskId]
   }
 
   async function createSubtask(parentTaskId, title, description) {
-    const response = await fetch(`${API_URL}/tasks/${parentTaskId}/subtasks`, {
+    const response = await authFetch(`${API_URL}/tasks/${parentTaskId}/subtasks`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ title, description })
     })
     const subtask = await response.json()
@@ -728,7 +798,7 @@ export const useAppStore = defineStore('app', () => {
       url += `&labelId=${labelId}`
     }
 
-    const response = await fetch(url)
+    const response = await authFetch(url)
     return await response.json()
   }
 
@@ -740,7 +810,7 @@ export const useAppStore = defineStore('app', () => {
       url += `&labelId=${labelId}`
     }
 
-    const response = await fetch(url)
+    const response = await authFetch(url)
     return await response.json()
   }
 

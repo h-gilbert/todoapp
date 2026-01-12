@@ -362,6 +362,43 @@ db.serialize(() => {
     }
   });
 
+  // Create refresh_tokens table for JWT authentication
+  db.run(`
+    CREATE TABLE IF NOT EXISTS refresh_tokens (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      token TEXT UNIQUE NOT NULL,
+      expires_at DATETIME NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )
+  `, (err) => {
+    if (err) {
+      console.error('Error creating refresh_tokens table:', err);
+    } else {
+      console.log('Refresh tokens table created successfully');
+    }
+  });
+
+  // Create invite_codes table for registration control
+  db.run(`
+    CREATE TABLE IF NOT EXISTS invite_codes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      code TEXT UNIQUE NOT NULL,
+      created_by_user_id INTEGER,
+      used BOOLEAN DEFAULT 0,
+      used_by_user_id INTEGER,
+      expires_at DATETIME,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `, (err) => {
+    if (err) {
+      console.error('Error creating invite_codes table:', err);
+    } else {
+      console.log('Invite codes table created successfully');
+    }
+  });
+
   // Create performance indexes for faster queries
   // Index for filtering projects by user
   db.run(`CREATE INDEX IF NOT EXISTS idx_projects_user_id ON projects(user_id)`, (err) => {
@@ -447,6 +484,20 @@ db.serialize(() => {
 
   db.run(`CREATE INDEX IF NOT EXISTS idx_api_tokens_token ON api_tokens(token)`, (err) => {
     if (err) console.error('Error creating idx_api_tokens_token:', err);
+  });
+
+  // Indexes for refresh_tokens table
+  db.run(`CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user_id ON refresh_tokens(user_id)`, (err) => {
+    if (err) console.error('Error creating idx_refresh_tokens_user_id:', err);
+  });
+
+  db.run(`CREATE INDEX IF NOT EXISTS idx_refresh_tokens_token ON refresh_tokens(token)`, (err) => {
+    if (err) console.error('Error creating idx_refresh_tokens_token:', err);
+  });
+
+  // Index for invite_codes table
+  db.run(`CREATE INDEX IF NOT EXISTS idx_invite_codes_code ON invite_codes(code)`, (err) => {
+    if (err) console.error('Error creating idx_invite_codes_code:', err);
   });
 
   console.log('Database initialized successfully with performance indexes');

@@ -7,10 +7,17 @@ const path = require('path');
 const fs = require('fs');
 const bcrypt = require('bcrypt');
 const crypto = require('crypto');
+const jwt = require('jsonwebtoken');
+const rateLimit = require('express-rate-limit');
+const helmet = require('helmet');
 const db = require('./database');
 
 const app = express();
-const PORT = 3000;
+const PORT = 3500;
+
+// JWT Configuration
+const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(64).toString('hex');
+const JWT_EXPIRY = '7d';
 
 // Ensure uploads directory exists
 const uploadsDir = path.join(__dirname, 'uploads');
@@ -48,9 +55,38 @@ const upload = multer({
   }
 });
 
-app.use(cors());
+// Security middleware
+app.use(helmet());
+
+// CORS configuration - restrict to allowed origins
+app.use(cors({
+  origin: [
+    'http://localhost:5176',
+    'http://localhost:3001',
+    'https://todo.hamishgilbert.com'
+  ],
+  credentials: true
+}));
+
 app.use(bodyParser.json());
-app.use('/uploads', express.static(uploadsDir));
+
+// Rate limiting
+const generalLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // 100 requests per window
+  message: { error: 'Too many requests, please try again later' }
+});
+
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 5, // 5 attempts per window
+  message: { error: 'Too many authentication attempts, please try again later' }
+});
+
+// Apply general rate limiting to all API routes
+app.use('/api', generalLimiter);
+
+// Note: Static file serving removed for security - use /api/files/:filename endpoint instead
 
 // Simple in-memory cache for frequently accessed data
 const cache = {
@@ -125,59 +161,67 @@ const generateApiToken = () => {
 
 // ============ MIDDLEWARE ============
 
-// Bearer token authentication middleware for API access
+// Bearer token authentication middleware - REQUIRES valid token
 const authenticateToken = async (req, res, next) => {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1]; // Bearer TOKEN
 
   if (!token) {
-    // If no token provided, continue with regular authentication
-    // This allows existing username/password auth to work
-    return next();
+    return res.status(401).json({ error: 'Authentication required' });
   }
 
   try {
-    // Verify token exists and is valid
+    // Try JWT first
+    try {
+      const decoded = jwt.verify(token, JWT_SECRET);
+      req.userId = decoded.userId;
+      req.authenticatedViaJWT = true;
+      return next();
+    } catch (jwtError) {
+      // JWT verification failed, try API token fallback for MCP compatibility
+    }
+
+    // Fall back to API token for MCP compatibility
     const tokenRecord = await dbGet(
       'SELECT * FROM api_tokens WHERE token = ?',
       [token]
     );
 
-    if (!tokenRecord) {
-      return res.status(401).json({ error: 'Invalid API token' });
+    if (tokenRecord && (!tokenRecord.expires_at || new Date(tokenRecord.expires_at) > new Date())) {
+      req.userId = tokenRecord.user_id;
+      req.tokenScopes = tokenRecord.scopes.split(',');
+      req.authenticatedViaToken = true;
+      await dbRun(
+        'UPDATE api_tokens SET last_used_at = CURRENT_TIMESTAMP WHERE id = ?',
+        [tokenRecord.id]
+      );
+      return next();
     }
 
-    // Check if token has expired
-    if (tokenRecord.expires_at && new Date(tokenRecord.expires_at) < new Date()) {
-      return res.status(401).json({ error: 'API token has expired' });
-    }
-
-    // Update last used timestamp
-    await dbRun(
-      'UPDATE api_tokens SET last_used_at = CURRENT_TIMESTAMP WHERE id = ?',
-      [tokenRecord.id]
-    );
-
-    // Attach user info to request
-    req.userId = tokenRecord.user_id;
-    req.tokenScopes = tokenRecord.scopes.split(',');
-    req.authenticatedViaToken = true;
-
-    next();
+    return res.status(403).json({ error: 'Invalid or expired token' });
   } catch (error) {
     console.error('Token authentication error:', error);
     return res.status(500).json({ error: 'Internal server error' });
   }
 };
 
+// Middleware to verify the authenticated user matches the requested user
+const verifyUserMatch = (req, res, next) => {
+  const requestedUserId = parseInt(req.params.userId);
+  if (req.userId !== requestedUserId) {
+    return res.status(403).json({ error: 'Access denied' });
+  }
+  next();
+};
+
 // Middleware to check if user has access to a project (owns it or it's shared with them)
 const checkProjectAccess = async (req, res, next) => {
   try {
-    const userId = req.body.userId || req.query.userId || req.params.userId;
+    const userId = req.userId; // From authenticated token
     const projectId = req.params.projectId || req.params.id || req.body.projectId;
 
-    if (!userId || !projectId) {
-      return res.status(400).json({ error: 'User ID and Project ID are required' });
+    if (!projectId) {
+      return res.status(400).json({ error: 'Project ID is required' });
     }
 
     // Check if user owns the project
@@ -212,12 +256,8 @@ const checkProjectAccess = async (req, res, next) => {
 // Middleware to check if user has access to a section (via project ownership or share)
 const checkSectionAccess = async (req, res, next) => {
   try {
-    const userId = req.body.userId || req.query.userId || req.params.userId;
+    const userId = req.userId; // From authenticated token
     const sectionId = req.params.sectionId || req.params.id || req.body.sectionId;
-
-    if (!userId) {
-      return res.status(400).json({ error: 'User ID is required' });
-    }
 
     if (!sectionId) {
       return res.status(400).json({ error: 'Section ID is required' });
@@ -264,12 +304,8 @@ const checkSectionAccess = async (req, res, next) => {
 // Middleware to check if user has access to a task (via project ownership or share)
 const checkTaskAccess = async (req, res, next) => {
   try {
-    const userId = req.body.userId || req.query.userId || req.params.userId;
-    const taskId = req.params.id || req.body.taskId;
-
-    if (!userId) {
-      return res.status(400).json({ error: 'User ID is required' });
-    }
+    const userId = req.userId; // From authenticated token
+    const taskId = req.params.id || req.params.taskId || req.body.taskId;
 
     if (!taskId) {
       return res.status(400).json({ error: 'Task ID is required' });
@@ -319,14 +355,18 @@ const checkTaskAccess = async (req, res, next) => {
   }
 };
 
-// Apply token authentication middleware to all API routes
-app.use('/api', authenticateToken);
+// Note: Authentication is applied per-route, not globally, to allow public endpoints like login/register/health
 
 // ============ USER ROUTES ============
 
 // Register new user
-app.post('/api/users/register', async (req, res) => {
+app.post('/api/users/register', authLimiter, async (req, res) => {
   try {
+    // Check if registration is disabled
+    if (process.env.REGISTRATION_DISABLED === 'true') {
+      return res.status(403).json({ error: 'Registration is currently disabled' });
+    }
+
     const { username, password } = req.body;
 
     if (!username || !password) {
@@ -352,7 +392,24 @@ app.post('/api/users/register', async (req, res) => {
     const result = await dbRun('INSERT INTO users (username, password_hash) VALUES (?, ?)', [username, password_hash]);
     const user = await dbGet('SELECT id, username, created_at FROM users WHERE id = ?', [result.lastID]);
 
-    res.json(user);
+    // Generate JWT access token
+    const accessToken = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: JWT_EXPIRY });
+
+    // Generate refresh token
+    const refreshToken = crypto.randomBytes(64).toString('hex');
+    const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(); // 30 days
+
+    // Store refresh token
+    await dbRun(
+      'INSERT INTO refresh_tokens (user_id, token, expires_at) VALUES (?, ?, ?)',
+      [user.id, refreshToken, expiresAt]
+    );
+
+    res.json({
+      user,
+      accessToken,
+      refreshToken
+    });
   } catch (error) {
     console.error('Registration error:', error);
     res.status(500).json({ error: 'Internal server error' });
@@ -360,7 +417,7 @@ app.post('/api/users/register', async (req, res) => {
 });
 
 // Login user
-app.post('/api/users/login', async (req, res) => {
+app.post('/api/users/login', authLimiter, async (req, res) => {
   try {
     const { username, password } = req.body;
 
@@ -386,22 +443,86 @@ app.post('/api/users/login', async (req, res) => {
       return res.status(401).json({ error: 'Invalid username or password' });
     }
 
-    // Return user without password_hash
+    // Generate JWT access token
+    const accessToken = jwt.sign({ userId: user.id }, JWT_SECRET, { expiresIn: JWT_EXPIRY });
+
+    // Generate refresh token
+    const refreshToken = crypto.randomBytes(64).toString('hex');
+    const expiresAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(); // 30 days
+
+    // Store refresh token
+    await dbRun(
+      'INSERT INTO refresh_tokens (user_id, token, expires_at) VALUES (?, ?, ?)',
+      [user.id, refreshToken, expiresAt]
+    );
+
+    // Return user without password_hash, plus tokens
     const { password_hash, ...userWithoutPassword } = user;
-    res.json(userWithoutPassword);
+    res.json({
+      user: userWithoutPassword,
+      accessToken,
+      refreshToken
+    });
   } catch (error) {
     console.error('Login error:', error);
     res.status(500).json({ error: 'Internal server error' });
   }
 });
 
-// Change password
-app.post('/api/users/change-password', async (req, res) => {
+// Refresh access token
+app.post('/api/users/refresh-token', async (req, res) => {
   try {
-    const { userId, currentPassword, newPassword } = req.body;
+    const { refreshToken } = req.body;
 
-    if (!userId || !currentPassword || !newPassword) {
-      return res.status(400).json({ error: 'User ID, current password, and new password are required' });
+    if (!refreshToken) {
+      return res.status(400).json({ error: 'Refresh token is required' });
+    }
+
+    // Find valid refresh token
+    const tokenRecord = await dbGet(
+      'SELECT * FROM refresh_tokens WHERE token = ? AND expires_at > datetime("now")',
+      [refreshToken]
+    );
+
+    if (!tokenRecord) {
+      return res.status(403).json({ error: 'Invalid or expired refresh token' });
+    }
+
+    // Generate new access token
+    const accessToken = jwt.sign({ userId: tokenRecord.user_id }, JWT_SECRET, { expiresIn: JWT_EXPIRY });
+
+    res.json({ accessToken });
+  } catch (error) {
+    console.error('Refresh token error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Logout user
+app.post('/api/users/logout', authenticateToken, async (req, res) => {
+  try {
+    const { refreshToken } = req.body;
+
+    if (refreshToken) {
+      // Delete the refresh token
+      await dbRun('DELETE FROM refresh_tokens WHERE token = ?', [refreshToken]);
+    }
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Logout error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Change password
+app.post('/api/users/change-password', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.userId; // From authenticated token
+    const { currentPassword, newPassword } = req.body;
+
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ error: 'Current password and new password are required' });
     }
 
     // Validate new password length
@@ -444,19 +565,13 @@ app.post('/api/users/change-password', async (req, res) => {
 // ============ API TOKEN ROUTES ============
 
 // Generate a new API token
-app.post('/api/users/:userId/tokens', async (req, res) => {
+app.post('/api/users/:userId/tokens', authenticateToken, verifyUserMatch, async (req, res) => {
   try {
-    const { userId } = req.params;
+    const userId = req.userId; // From authenticated token
     const { name, scopes, expiresInDays } = req.body;
 
     if (!name) {
       return res.status(400).json({ error: 'Token name is required' });
-    }
-
-    // Verify user exists
-    const user = await dbGet('SELECT * FROM users WHERE id = ?', [userId]);
-    if (!user) {
-      return res.status(404).json({ error: 'User not found' });
     }
 
     // Generate token
@@ -489,9 +604,9 @@ app.post('/api/users/:userId/tokens', async (req, res) => {
 });
 
 // Get all API tokens for a user
-app.get('/api/users/:userId/tokens', async (req, res) => {
+app.get('/api/users/:userId/tokens', authenticateToken, verifyUserMatch, async (req, res) => {
   try {
-    const { userId } = req.params;
+    const userId = req.userId; // From authenticated token
 
     const tokens = await dbAll(
       'SELECT id, user_id, name, scopes, expires_at, last_used_at, created_at FROM api_tokens WHERE user_id = ? ORDER BY created_at DESC',
@@ -507,14 +622,10 @@ app.get('/api/users/:userId/tokens', async (req, res) => {
 });
 
 // Revoke an API token
-app.delete('/api/tokens/:id', async (req, res) => {
+app.delete('/api/tokens/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
-    const { userId } = req.body;
-
-    if (!userId) {
-      return res.status(400).json({ error: 'User ID is required' });
-    }
+    const userId = req.userId; // From authenticated token
 
     // Verify the token belongs to the user before deleting
     const token = await dbGet('SELECT * FROM api_tokens WHERE id = ? AND user_id = ?', [id, userId]);
@@ -535,9 +646,9 @@ app.delete('/api/tokens/:id', async (req, res) => {
 // ============ SEARCH ROUTES ============
 
 // Search across all projects, sections, and tasks for a user
-app.get('/api/users/:userId/search', async (req, res) => {
+app.get('/api/users/:userId/search', authenticateToken, verifyUserMatch, async (req, res) => {
   try {
-    const { userId } = req.params;
+    const userId = req.userId; // From authenticated token
     const { q, labelId } = req.query;
 
     if (!q || q.trim().length === 0) {
@@ -630,7 +741,7 @@ app.get('/api/users/:userId/search', async (req, res) => {
 });
 
 // Search within a specific project
-app.get('/api/projects/:projectId/search', async (req, res) => {
+app.get('/api/projects/:projectId/search', authenticateToken, checkProjectAccess, async (req, res) => {
   try {
     const { projectId } = req.params;
     const { q, labelId } = req.query;
@@ -709,9 +820,9 @@ app.get('/api/projects/:projectId/search', async (req, res) => {
 // ============ PROJECT ROUTES ============
 
 // Get all projects for a user (owned + shared)
-app.get('/api/users/:userId/projects', async (req, res) => {
+app.get('/api/users/:userId/projects', authenticateToken, verifyUserMatch, async (req, res) => {
   try {
-    const { userId } = req.params;
+    const userId = req.userId; // From authenticated token
     const cacheKey = `user_${userId}_projects`;
 
     // Check cache first
@@ -794,12 +905,13 @@ app.get('/api/users/:userId/projects', async (req, res) => {
 });
 
 // Create a new project
-app.post('/api/projects', async (req, res) => {
+app.post('/api/projects', authenticateToken, async (req, res) => {
   try {
-    const { userId, name, description } = req.body;
+    const userId = req.userId; // From authenticated token
+    const { name, description } = req.body;
 
-    if (!userId || !name) {
-      return res.status(400).json({ error: 'User ID and name are required' });
+    if (!name) {
+      return res.status(400).json({ error: 'Name is required' });
     }
 
     // Get the max order_index
@@ -827,7 +939,7 @@ app.post('/api/projects', async (req, res) => {
 });
 
 // Update project
-app.put('/api/projects/:id', async (req, res) => {
+app.put('/api/projects/:id', authenticateToken, checkProjectAccess, async (req, res) => {
   try {
     const { id } = req.params;
     const { name, description } = req.body;
@@ -863,7 +975,7 @@ app.put('/api/projects/:id', async (req, res) => {
 });
 
 // Delete project
-app.delete('/api/projects/:id', async (req, res) => {
+app.delete('/api/projects/:id', authenticateToken, checkProjectAccess, async (req, res) => {
   try {
     const { id } = req.params;
     await dbRun('DELETE FROM projects WHERE id = ?', [id]);
@@ -879,7 +991,7 @@ app.delete('/api/projects/:id', async (req, res) => {
 });
 
 // Reorder projects
-app.post('/api/projects/reorder', async (req, res) => {
+app.post('/api/projects/reorder', authenticateToken, async (req, res) => {
   try {
     const { projectIds } = req.body;
 
@@ -895,7 +1007,7 @@ app.post('/api/projects/reorder', async (req, res) => {
 });
 
 // Archive project
-app.post('/api/projects/:id/archive', async (req, res) => {
+app.post('/api/projects/:id/archive', authenticateToken, checkProjectAccess, async (req, res) => {
   try {
     const { id } = req.params;
     await dbRun(
@@ -914,7 +1026,7 @@ app.post('/api/projects/:id/archive', async (req, res) => {
 });
 
 // Unarchive project
-app.post('/api/projects/:id/unarchive', async (req, res) => {
+app.post('/api/projects/:id/unarchive', authenticateToken, checkProjectAccess, async (req, res) => {
   try {
     const { id } = req.params;
     await dbRun(
@@ -933,9 +1045,9 @@ app.post('/api/projects/:id/unarchive', async (req, res) => {
 });
 
 // Get archived projects for a user
-app.get('/api/users/:userId/archived-projects', async (req, res) => {
+app.get('/api/users/:userId/archived-projects', authenticateToken, verifyUserMatch, async (req, res) => {
   try {
-    const { userId } = req.params;
+    const userId = req.userId; // From authenticated token
     const projects = await dbAll(
       `SELECT p.*,
         (SELECT COUNT(*) FROM sections s WHERE s.project_id = p.id AND s.archived = 0) as sectionCount,
@@ -955,19 +1067,18 @@ app.get('/api/users/:userId/archived-projects', async (req, res) => {
 // ============ PROJECT SHARING ROUTES ============
 
 // Share a project with another user by username
-app.post('/api/projects/:id/share', async (req, res) => {
+app.post('/api/projects/:id/share', authenticateToken, checkProjectAccess, async (req, res) => {
   try {
     const { id } = req.params;
-    const { username, userId } = req.body;
+    const userId = req.userId; // From authenticated token
+    const { username } = req.body;
 
-    if (!username || !userId) {
-      return res.status(400).json({ error: 'Username and user ID are required' });
+    if (!username) {
+      return res.status(400).json({ error: 'Username is required' });
     }
 
-    // Check if requester owns the project
-    const project = await dbGet('SELECT * FROM projects WHERE id = ? AND user_id = ?', [id, userId]);
-
-    if (!project) {
+    // Check if requester owns the project (only owners can share)
+    if (!req.isOwner) {
       return res.status(403).json({ error: 'Only project owner can share the project' });
     }
 
@@ -1017,7 +1128,7 @@ app.post('/api/projects/:id/share', async (req, res) => {
 });
 
 // Get all users a project is shared with
-app.get('/api/projects/:id/shares', async (req, res) => {
+app.get('/api/projects/:id/shares', authenticateToken, checkProjectAccess, async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -1038,15 +1149,12 @@ app.get('/api/projects/:id/shares', async (req, res) => {
 });
 
 // Remove share access from a user
-app.delete('/api/projects/:id/shares/:shareUserId', async (req, res) => {
+app.delete('/api/projects/:id/shares/:shareUserId', authenticateToken, checkProjectAccess, async (req, res) => {
   try {
     const { id, shareUserId } = req.params;
-    const { userId } = req.query;
 
     // Check if requester owns the project
-    const project = await dbGet('SELECT * FROM projects WHERE id = ? AND user_id = ?', [id, userId]);
-
-    if (!project) {
+    if (!req.isOwner) {
       return res.status(403).json({ error: 'Only project owner can remove shares' });
     }
 
@@ -1069,7 +1177,7 @@ app.delete('/api/projects/:id/shares/:shareUserId', async (req, res) => {
 // ============ SECTION ROUTES ============
 
 // Get all sections for a project (with creator info for shared projects)
-app.get('/api/projects/:projectId/sections', async (req, res) => {
+app.get('/api/projects/:projectId/sections', authenticateToken, checkProjectAccess, async (req, res) => {
   try {
     const { projectId } = req.params;
     const sections = await dbAll(`
@@ -1087,12 +1195,20 @@ app.get('/api/projects/:projectId/sections', async (req, res) => {
 });
 
 // Create a new section
-app.post('/api/sections', async (req, res) => {
+app.post('/api/sections', authenticateToken, async (req, res) => {
   try {
-    const { projectId, name, userId } = req.body;
+    const userId = req.userId; // From authenticated token
+    const { projectId, name } = req.body;
 
     if (!projectId || !name) {
       return res.status(400).json({ error: 'Project ID and name are required' });
+    }
+
+    // Verify user has access to the project
+    const project = await dbGet('SELECT * FROM projects WHERE id = ? AND user_id = ?', [projectId, userId]);
+    const share = !project && await dbGet('SELECT * FROM project_shares WHERE project_id = ? AND user_id = ?', [projectId, userId]);
+    if (!project && !share) {
+      return res.status(403).json({ error: 'Access denied to this project' });
     }
 
     const maxOrder = await dbGet(
@@ -1103,7 +1219,7 @@ app.post('/api/sections', async (req, res) => {
 
     const result = await dbRun(
       'INSERT INTO sections (project_id, name, order_index, created_by_user_id) VALUES (?, ?, ?, ?)',
-      [projectId, name, orderIndex, userId || null]
+      [projectId, name, orderIndex, userId]
     );
 
     // Get section with creator username
@@ -1126,7 +1242,7 @@ app.post('/api/sections', async (req, res) => {
 });
 
 // Update section
-app.put('/api/sections/:id', async (req, res) => {
+app.put('/api/sections/:id', authenticateToken, checkSectionAccess, async (req, res) => {
   try {
     const { id } = req.params;
     const { name } = req.body;
@@ -1142,7 +1258,7 @@ app.put('/api/sections/:id', async (req, res) => {
 });
 
 // Delete section
-app.delete('/api/sections/:id', async (req, res) => {
+app.delete('/api/sections/:id', authenticateToken, checkSectionAccess, async (req, res) => {
   try {
     const { id } = req.params;
     await dbRun('DELETE FROM sections WHERE id = ?', [id]);
@@ -1154,7 +1270,7 @@ app.delete('/api/sections/:id', async (req, res) => {
 });
 
 // Reorder sections
-app.post('/api/sections/reorder', async (req, res) => {
+app.post('/api/sections/reorder', authenticateToken, async (req, res) => {
   try {
     const { sectionIds } = req.body;
 
@@ -1170,19 +1286,19 @@ app.post('/api/sections/reorder', async (req, res) => {
 });
 
 // Archive section
-app.post('/api/sections/:id/archive', async (req, res) => {
+app.post('/api/sections/:id/archive', authenticateToken, checkSectionAccess, async (req, res) => {
   try {
     const { id } = req.params;
-    const { userId } = req.body;
+    const userId = req.userId; // From authenticated token
 
     // Archive all completed tasks in this section
     await dbRun(
       'UPDATE tasks SET archived = 1, archived_by_user_id = ? WHERE section_id = ? AND completed = 1',
-      [userId || null, id]
+      [userId, id]
     );
 
     // Archive the section
-    await dbRun('UPDATE sections SET archived = 1, archived_by_user_id = ? WHERE id = ?', [userId || null, id]);
+    await dbRun('UPDATE sections SET archived = 1, archived_by_user_id = ? WHERE id = ?', [userId, id]);
 
     res.json({ success: true });
   } catch (error) {
@@ -1192,7 +1308,7 @@ app.post('/api/sections/:id/archive', async (req, res) => {
 });
 
 // Unarchive section
-app.post('/api/sections/:id/unarchive', async (req, res) => {
+app.post('/api/sections/:id/unarchive', authenticateToken, checkSectionAccess, async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -1219,7 +1335,7 @@ app.post('/api/sections/:id/unarchive', async (req, res) => {
 
 // Get all tasks for a section (excluding subtasks - they're fetched separately)
 // Includes user attribution info for shared projects
-app.get('/api/sections/:sectionId/tasks', async (req, res) => {
+app.get('/api/sections/:sectionId/tasks', authenticateToken, checkSectionAccess, async (req, res) => {
   try {
     const { sectionId } = req.params;
     const tasks = await dbAll(`
@@ -1259,12 +1375,24 @@ app.get('/api/sections/:sectionId/tasks', async (req, res) => {
 });
 
 // Create a new task
-app.post('/api/tasks', async (req, res) => {
+app.post('/api/tasks', authenticateToken, async (req, res) => {
   try {
-    const { sectionId, title, description, parent_task_id, userId } = req.body;
+    const userId = req.userId; // From authenticated token
+    const { sectionId, title, description, parent_task_id } = req.body;
 
     if (!sectionId || !title) {
       return res.status(400).json({ error: 'Section ID and title are required' });
+    }
+
+    // Verify user has access to the section's project
+    const section = await dbGet('SELECT * FROM sections WHERE id = ?', [sectionId]);
+    if (!section) {
+      return res.status(404).json({ error: 'Section not found' });
+    }
+    const project = await dbGet('SELECT * FROM projects WHERE id = ? AND user_id = ?', [section.project_id, userId]);
+    const share = !project && await dbGet('SELECT * FROM project_shares WHERE project_id = ? AND user_id = ?', [section.project_id, userId]);
+    if (!project && !share) {
+      return res.status(403).json({ error: 'Access denied to this section' });
     }
 
     // Validate parent_task_id if provided
@@ -1287,7 +1415,7 @@ app.post('/api/tasks', async (req, res) => {
 
     const result = await dbRun(
       'INSERT INTO tasks (section_id, title, description, parent_task_id, order_index, created_by_user_id) VALUES (?, ?, ?, ?, ?, ?)',
-      [sectionId, title, description || '', parent_task_id || null, orderIndex, userId || null]
+      [sectionId, title, description || '', parent_task_id || null, orderIndex, userId]
     );
 
     // Get task with creator username
@@ -1320,10 +1448,11 @@ app.post('/api/tasks', async (req, res) => {
 // Note: When Claude marks a task as complete via API, set both:
 //   completed: 1 (marks as done, shows strikethrough)
 //   programmatic_completion: 1 (keeps checkbox unchecked so user can still manually archive)
-app.put('/api/tasks/:id', async (req, res) => {
+app.put('/api/tasks/:id', authenticateToken, checkTaskAccess, async (req, res) => {
   try {
     const { id } = req.params;
-    const { title, description, completed, programmatic_completion, parent_task_id, userId } = req.body;
+    const userId = req.userId; // From authenticated token
+    const { title, description, completed, programmatic_completion, parent_task_id } = req.body;
 
     const updates = [];
     const params = [];
@@ -1411,7 +1540,7 @@ app.put('/api/tasks/:id', async (req, res) => {
 });
 
 // Get a single task by ID
-app.get('/api/tasks/:id', async (req, res) => {
+app.get('/api/tasks/:id', authenticateToken, checkTaskAccess, async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -1442,15 +1571,9 @@ app.get('/api/tasks/:id', async (req, res) => {
 });
 
 // Get all subtasks for a task
-app.get('/api/tasks/:id/subtasks', async (req, res) => {
+app.get('/api/tasks/:id/subtasks', authenticateToken, checkTaskAccess, async (req, res) => {
   try {
     const { id } = req.params;
-
-    // Verify parent task exists
-    const parentTask = await dbGet('SELECT * FROM tasks WHERE id = ?', [id]);
-    if (!parentTask) {
-      return res.status(404).json({ error: 'Parent task not found' });
-    }
 
     const subtasks = await dbAll(`
       SELECT t.*,
@@ -1471,10 +1594,11 @@ app.get('/api/tasks/:id/subtasks', async (req, res) => {
 });
 
 // Create a subtask (shortcut endpoint)
-app.post('/api/tasks/:id/subtasks', async (req, res) => {
+app.post('/api/tasks/:id/subtasks', authenticateToken, checkTaskAccess, async (req, res) => {
   try {
     const { id } = req.params;
-    const { title, description, userId } = req.body;
+    const userId = req.userId; // From authenticated token
+    const { title, description } = req.body;
 
     if (!title) {
       return res.status(400).json({ error: 'Title is required' });
@@ -1498,7 +1622,7 @@ app.post('/api/tasks/:id/subtasks', async (req, res) => {
 
     const result = await dbRun(
       'INSERT INTO tasks (section_id, title, description, parent_task_id, order_index, created_by_user_id) VALUES (?, ?, ?, ?, ?, ?)',
-      [parentTask.section_id, title, description || '', id, orderIndex, userId || null]
+      [parentTask.section_id, title, description || '', id, orderIndex, userId]
     );
 
     const subtask = await dbGet(`
@@ -1519,11 +1643,11 @@ app.post('/api/tasks/:id/subtasks', async (req, res) => {
 });
 
 // Archive task
-app.post('/api/tasks/:id/archive', async (req, res) => {
+app.post('/api/tasks/:id/archive', authenticateToken, checkTaskAccess, async (req, res) => {
   try {
     const { id } = req.params;
-    const { userId } = req.body;
-    await dbRun('UPDATE tasks SET archived = 1, archived_at = ?, archived_by_user_id = ? WHERE id = ?', [new Date().toISOString(), userId || null, id]);
+    const userId = req.userId; // From authenticated token
+    await dbRun('UPDATE tasks SET archived = 1, archived_at = ?, archived_by_user_id = ? WHERE id = ?', [new Date().toISOString(), userId, id]);
 
     // Invalidate caches
     invalidateCache('tasks');
@@ -1537,7 +1661,7 @@ app.post('/api/tasks/:id/archive', async (req, res) => {
 });
 
 // Unarchive task
-app.post('/api/tasks/:id/unarchive', async (req, res) => {
+app.post('/api/tasks/:id/unarchive', authenticateToken, checkTaskAccess, async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -1561,7 +1685,7 @@ app.post('/api/tasks/:id/unarchive', async (req, res) => {
 });
 
 // Get archived tasks for a project
-app.get('/api/projects/:projectId/archived', async (req, res) => {
+app.get('/api/projects/:projectId/archived', authenticateToken, checkProjectAccess, async (req, res) => {
   try {
     const { projectId } = req.params;
     const tasks = await dbAll(
@@ -1580,7 +1704,7 @@ app.get('/api/projects/:projectId/archived', async (req, res) => {
 });
 
 // Get archived sections for a project
-app.get('/api/projects/:projectId/archived-sections', async (req, res) => {
+app.get('/api/projects/:projectId/archived-sections', authenticateToken, checkProjectAccess, async (req, res) => {
   try {
     const { projectId } = req.params;
     const sections = await dbAll(
@@ -1597,7 +1721,7 @@ app.get('/api/projects/:projectId/archived-sections', async (req, res) => {
 });
 
 // Delete task
-app.delete('/api/tasks/:id', async (req, res) => {
+app.delete('/api/tasks/:id', authenticateToken, checkTaskAccess, async (req, res) => {
   try {
     const { id } = req.params;
     await dbRun('DELETE FROM tasks WHERE id = ?', [id]);
@@ -1614,7 +1738,7 @@ app.delete('/api/tasks/:id', async (req, res) => {
 });
 
 // Move task to different section
-app.post('/api/tasks/:id/move', async (req, res) => {
+app.post('/api/tasks/:id/move', authenticateToken, checkTaskAccess, async (req, res) => {
   try {
     const { id } = req.params;
     const { sectionId, targetIndex } = req.body;
@@ -1664,7 +1788,7 @@ app.post('/api/tasks/:id/move', async (req, res) => {
 });
 
 // Reorder tasks
-app.post('/api/tasks/reorder', async (req, res) => {
+app.post('/api/tasks/reorder', authenticateToken, async (req, res) => {
   try {
     const { taskIds } = req.body;
 
@@ -1682,7 +1806,7 @@ app.post('/api/tasks/reorder', async (req, res) => {
 // ============ PHOTO ROUTES ============
 
 // Upload photos for a task
-app.post('/api/tasks/:id/photos', upload.array('photos', 5), async (req, res) => {
+app.post('/api/tasks/:id/photos', authenticateToken, checkTaskAccess, upload.array('photos', 5), async (req, res) => {
   try {
     const { id } = req.params;
     const files = req.files;
@@ -1711,7 +1835,7 @@ app.post('/api/tasks/:id/photos', upload.array('photos', 5), async (req, res) =>
 });
 
 // Get photos for a task
-app.get('/api/tasks/:id/photos', async (req, res) => {
+app.get('/api/tasks/:id/photos', authenticateToken, checkTaskAccess, async (req, res) => {
   try {
     const { id } = req.params;
     const photos = await dbAll(
@@ -1726,7 +1850,7 @@ app.get('/api/tasks/:id/photos', async (req, res) => {
 });
 
 // Delete a photo
-app.delete('/api/photos/:id', async (req, res) => {
+app.delete('/api/photos/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -1734,6 +1858,23 @@ app.delete('/api/photos/:id', async (req, res) => {
     const photo = await dbGet('SELECT * FROM task_photos WHERE id = ?', [id]);
 
     if (photo) {
+      // Verify user has access to the task this photo belongs to
+      const task = await dbGet(
+        `SELECT t.*, s.project_id
+         FROM tasks t
+         JOIN sections s ON t.section_id = s.id
+         WHERE t.id = ?`,
+        [photo.task_id]
+      );
+
+      if (task) {
+        const project = await dbGet('SELECT * FROM projects WHERE id = ? AND user_id = ?', [task.project_id, req.userId]);
+        const share = !project && await dbGet('SELECT * FROM project_shares WHERE project_id = ? AND user_id = ?', [task.project_id, req.userId]);
+        if (!project && !share) {
+          return res.status(403).json({ error: 'Access denied' });
+        }
+      }
+
       // Delete file from filesystem
       const filePath = path.join(uploadsDir, photo.filename);
       if (fs.existsSync(filePath)) {
@@ -1751,12 +1892,53 @@ app.delete('/api/photos/:id', async (req, res) => {
   }
 });
 
+// Authenticated file access endpoint (replaces static serving)
+app.get('/api/files/:filename', authenticateToken, async (req, res) => {
+  try {
+    const { filename } = req.params;
+
+    // Find the photo and verify access
+    const photo = await dbGet('SELECT * FROM task_photos WHERE filename = ?', [filename]);
+
+    if (!photo) {
+      return res.status(404).json({ error: 'File not found' });
+    }
+
+    // Verify user has access to the task this photo belongs to
+    const task = await dbGet(
+      `SELECT t.*, s.project_id
+       FROM tasks t
+       JOIN sections s ON t.section_id = s.id
+       WHERE t.id = ?`,
+      [photo.task_id]
+    );
+
+    if (task) {
+      const project = await dbGet('SELECT * FROM projects WHERE id = ? AND user_id = ?', [task.project_id, req.userId]);
+      const share = !project && await dbGet('SELECT * FROM project_shares WHERE project_id = ? AND user_id = ?', [task.project_id, req.userId]);
+      if (!project && !share) {
+        return res.status(403).json({ error: 'Access denied' });
+      }
+    }
+
+    const filePath = path.join(uploadsDir, filename);
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: 'File not found' });
+    }
+
+    res.sendFile(filePath);
+  } catch (error) {
+    console.error('File access error:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // ============ LABEL/TAG ROUTES ============
 
 // Get all labels for a user
-app.get('/api/users/:userId/labels', async (req, res) => {
+app.get('/api/users/:userId/labels', authenticateToken, verifyUserMatch, async (req, res) => {
   try {
-    const { userId } = req.params;
+    const userId = req.userId; // From authenticated token
     const labels = await dbAll(
       'SELECT * FROM labels WHERE user_id = ? ORDER BY name ASC',
       [userId]
@@ -1769,12 +1951,13 @@ app.get('/api/users/:userId/labels', async (req, res) => {
 });
 
 // Create a new label
-app.post('/api/labels', async (req, res) => {
+app.post('/api/labels', authenticateToken, async (req, res) => {
   try {
-    const { userId, name, color } = req.body;
+    const userId = req.userId; // From authenticated token
+    const { name, color } = req.body;
 
-    if (!userId || !name) {
-      return res.status(400).json({ error: 'User ID and name are required' });
+    if (!name) {
+      return res.status(400).json({ error: 'Name is required' });
     }
 
     const labelColor = color || '#3B82F6'; // Default blue
@@ -1797,10 +1980,17 @@ app.post('/api/labels', async (req, res) => {
 });
 
 // Update a label
-app.put('/api/labels/:id', async (req, res) => {
+app.put('/api/labels/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
+    const userId = req.userId; // From authenticated token
     const { name, color } = req.body;
+
+    // Verify label belongs to user
+    const existingLabel = await dbGet('SELECT * FROM labels WHERE id = ? AND user_id = ?', [id, userId]);
+    if (!existingLabel) {
+      return res.status(404).json({ error: 'Label not found' });
+    }
 
     const updates = [];
     const params = [];
@@ -1834,9 +2024,16 @@ app.put('/api/labels/:id', async (req, res) => {
 });
 
 // Delete a label
-app.delete('/api/labels/:id', async (req, res) => {
+app.delete('/api/labels/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
+    const userId = req.userId; // From authenticated token
+
+    // Verify label belongs to user
+    const existingLabel = await dbGet('SELECT * FROM labels WHERE id = ? AND user_id = ?', [id, userId]);
+    if (!existingLabel) {
+      return res.status(404).json({ error: 'Label not found' });
+    }
 
     // Delete label (task_labels will be cascade deleted)
     await dbRun('DELETE FROM labels WHERE id = ?', [id]);
@@ -1849,7 +2046,7 @@ app.delete('/api/labels/:id', async (req, res) => {
 });
 
 // Get all labels for a task (with label details)
-app.get('/api/tasks/:id/labels', async (req, res) => {
+app.get('/api/tasks/:id/labels', authenticateToken, checkTaskAccess, async (req, res) => {
   try {
     const { id } = req.params;
 
@@ -1869,14 +2066,26 @@ app.get('/api/tasks/:id/labels', async (req, res) => {
 });
 
 // Add a label to a task
-app.post('/api/tasks/:taskId/labels/:labelId', async (req, res) => {
+app.post('/api/tasks/:taskId/labels/:labelId', authenticateToken, async (req, res) => {
   try {
     const { taskId, labelId } = req.params;
 
-    // Verify task and label exist
-    const task = await dbGet('SELECT * FROM tasks WHERE id = ?', [taskId]);
+    // Verify task exists and user has access
+    const task = await dbGet(
+      `SELECT t.*, s.project_id
+       FROM tasks t
+       JOIN sections s ON t.section_id = s.id
+       WHERE t.id = ?`,
+      [taskId]
+    );
     if (!task) {
       return res.status(404).json({ error: 'Task not found' });
+    }
+
+    const project = await dbGet('SELECT * FROM projects WHERE id = ? AND user_id = ?', [task.project_id, req.userId]);
+    const share = !project && await dbGet('SELECT * FROM project_shares WHERE project_id = ? AND user_id = ?', [task.project_id, req.userId]);
+    if (!project && !share) {
+      return res.status(403).json({ error: 'Access denied' });
     }
 
     const label = await dbGet('SELECT * FROM labels WHERE id = ?', [labelId]);
@@ -1901,9 +2110,27 @@ app.post('/api/tasks/:taskId/labels/:labelId', async (req, res) => {
 });
 
 // Remove a label from a task
-app.delete('/api/tasks/:taskId/labels/:labelId', async (req, res) => {
+app.delete('/api/tasks/:taskId/labels/:labelId', authenticateToken, async (req, res) => {
   try {
     const { taskId, labelId } = req.params;
+
+    // Verify task exists and user has access
+    const task = await dbGet(
+      `SELECT t.*, s.project_id
+       FROM tasks t
+       JOIN sections s ON t.section_id = s.id
+       WHERE t.id = ?`,
+      [taskId]
+    );
+    if (!task) {
+      return res.status(404).json({ error: 'Task not found' });
+    }
+
+    const project = await dbGet('SELECT * FROM projects WHERE id = ? AND user_id = ?', [task.project_id, req.userId]);
+    const share = !project && await dbGet('SELECT * FROM project_shares WHERE project_id = ? AND user_id = ?', [task.project_id, req.userId]);
+    if (!project && !share) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
 
     await dbRun(
       'DELETE FROM task_labels WHERE task_id = ? AND label_id = ?',

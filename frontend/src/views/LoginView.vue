@@ -2,7 +2,7 @@
   <div class="login-container">
     <div class="login-card">
       <h1>Project Tracker</h1>
-      <p class="subtitle">{{ isRegistering ? 'Create your account' : 'Sign in to your account' }}</p>
+      <p class="subtitle">Sign in to your account</p>
 
       <div v-if="error" class="error-message">{{ error }}</div>
 
@@ -23,13 +23,13 @@
           required
         />
         <button type="submit" class="login-button" :disabled="loading">
-          {{ loading ? 'Please wait...' : (isRegistering ? 'Create Account' : 'Sign In') }}
+          {{ loading ? 'Please wait...' : 'Sign In' }}
         </button>
       </form>
 
       <div class="toggle-mode">
-        <button @click="toggleMode" class="toggle-button">
-          {{ isRegistering ? 'Already have an account? Sign in' : 'Need an account? Create one' }}
+        <button @click="loadDemoCredentials" class="toggle-button">
+          {{ demoLoaded ? 'Demo credentials loaded - click Sign In above' : 'Load demo credentials' }}
         </button>
       </div>
     </div>
@@ -45,13 +45,14 @@ const router = useRouter()
 const store = useAppStore()
 const username = ref('')
 const password = ref('')
-const isRegistering = ref(false)
 const error = ref('')
 const loading = ref(false)
+const demoLoaded = ref(false)
 
-function toggleMode() {
-  isRegistering.value = !isRegistering.value
-  error.value = ''
+function loadDemoCredentials() {
+  username.value = 'demo'
+  password.value = 'demo123'
+  demoLoaded.value = true
 }
 
 async function handleSubmit() {
@@ -62,19 +63,10 @@ async function handleSubmit() {
     return
   }
 
-  if (password.value.length < 6) {
-    error.value = 'Password must be at least 6 characters'
-    return
-  }
-
   loading.value = true
 
   try {
-    if (isRegistering.value) {
-      await store.register(username.value.trim(), password.value)
-    } else {
-      await store.login(username.value.trim(), password.value)
-    }
+    await store.login(username.value.trim(), password.value)
     router.push('/projects')
   } catch (err) {
     error.value = err.message || 'An error occurred'
