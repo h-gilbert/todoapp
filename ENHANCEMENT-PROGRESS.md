@@ -5,13 +5,12 @@
 
 ## 📋 Project Overview
 
-**Objective:** Extend the existing todo-app into a comprehensive bug tracking, feature tracking, and idea management platform with programmatic access for Claude Code.
+**Objective:** Extend the existing todo-app into a comprehensive bug tracking, feature tracking, and idea management platform.
 
 **Key Requirements:**
 - Task type classification (Task, Bug, Feature, Idea)
 - Nested tasks (2-level: Tasks → Subtasks)
 - Flexible labeling/tagging system
-- Programmatic API access for Claude Code (MCP Server)
 - Enhanced file uploads (support documents, logs, PDFs)
 - User → Projects → Sections → Tasks → Subtasks hierarchy
 
@@ -490,346 +489,6 @@ async function handleLogin() {
 
 ---
 
-### Phase 4: MCP Server for Claude Code (0% complete)
-
-**Purpose:** Allow Claude Code to programmatically access and manage tasks
-
-**New Directory:** `/todo-app/mcp-server/`
-
-**Structure:**
-```
-mcp-server/
-├── package.json
-├── tsconfig.json
-├── src/
-│   ├── index.ts          # MCP server entry point
-│   ├── tools/
-│   │   ├── tasks.ts      # Task management tools
-│   │   ├── labels.ts     # Label tools
-│   │   ├── search.ts     # Search tools
-│   │   └── bugs.ts       # Bug-specific tools
-│   └── types.ts          # TypeScript types
-├── .env.example
-└── README.md
-```
-
-#### 4.1 Package Setup
-
-**package.json:**
-```json
-{
-  "name": "todo-app-mcp-server",
-  "version": "1.0.0",
-  "type": "module",
-  "scripts": {
-    "build": "tsc",
-    "start": "node dist/index.js",
-    "dev": "tsx watch src/index.ts"
-  },
-  "dependencies": {
-    "@modelcontextprotocol/sdk": "^0.5.0",
-    "node-fetch": "^3.3.0",
-    "dotenv": "^16.0.0"
-  },
-  "devDependencies": {
-    "@types/node": "^20.0.0",
-    "typescript": "^5.0.0",
-    "tsx": "^4.0.0"
-  }
-}
-```
-
-#### 4.2 MCP Tools to Implement
-
-**Essential Tools:**
-
-1. **list_projects** - Get all user projects
-   ```typescript
-   {
-     name: "list_projects",
-     description: "List all projects for the user",
-     inputSchema: { type: "object", properties: {} }
-   }
-   ```
-
-2. **list_tasks** - Get tasks with filters
-   ```typescript
-   {
-     name: "list_tasks",
-     description: "List tasks in a project or section",
-     inputSchema: {
-       type: "object",
-       properties: {
-         projectId: { type: "number" },
-         sectionId: { type: "number" },
-         type: { type: "string", enum: ["task", "bug", "feature", "idea"] },
-         labelId: { type: "number" },
-         includeCompleted: { type: "boolean", default: false }
-       }
-     }
-   }
-   ```
-
-3. **create_task** - Create task/bug/feature/idea
-   ```typescript
-   {
-     name: "create_task",
-     description: "Create a new task with optional type and labels",
-     inputSchema: {
-       type: "object",
-       required: ["sectionId", "title"],
-       properties: {
-         sectionId: { type: "number" },
-         title: { type: "string" },
-         description: { type: "string" },
-         type: { type: "string", enum: ["task", "bug", "feature", "idea"] },
-         labelIds: { type: "array", items: { type: "number" } }
-       }
-     }
-   }
-   ```
-
-4. **add_bug** - Convenience method for creating bugs
-   ```typescript
-   {
-     name: "add_bug",
-     description: "Create a bug report with details",
-     inputSchema: {
-       type: "object",
-       required: ["sectionId", "title"],
-       properties: {
-         sectionId: { type: "number" },
-         title: { type: "string" },
-         description: { type: "string" },
-         labelIds: { type: "array", items: { type: "number" } }
-       }
-     }
-   }
-   ```
-
-5. **complete_task** - Mark task complete
-   ```typescript
-   {
-     name: "complete_task",
-     description: "Mark a task as complete (programmatically)",
-     inputSchema: {
-       type: "object",
-       required: ["taskId"],
-       properties: {
-         taskId: { type: "number" },
-         programmatic: { type: "boolean", default: true }
-       }
-     }
-   }
-   ```
-
-6. **search_tasks** - Search with filters
-   ```typescript
-   {
-     name: "search_tasks",
-     description: "Search tasks across all projects",
-     inputSchema: {
-       type: "object",
-       required: ["query"],
-       properties: {
-         query: { type: "string" },
-         type: { type: "string" },
-         labelId: { type: "number" }
-       }
-     }
-   }
-   ```
-
-7. **get_bugs** - Get all bugs for project
-8. **get_features** - Get all features
-9. **create_label** - Create new label
-10. **list_labels** - Get all labels
-11. **add_label_to_task** - Associate label with task
-
-#### 4.3 Authentication Configuration
-
-**Environment Variables (.env):**
-```
-TODO_APP_URL=http://localhost:3300
-API_TOKEN=<generate-via-api>
-USER_ID=1
-```
-
-**Generate Token:**
-```bash
-curl -X POST http://localhost:3300/api/users/1/tokens \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "Claude Code MCP",
-    "scopes": "read,write",
-    "expiresInDays": 365
-  }'
-```
-
-#### 4.4 Implementation Template
-
-**src/index.ts:**
-```typescript
-import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import fetch from 'node-fetch';
-import * as dotenv from 'dotenv';
-
-dotenv.config();
-
-const API_URL = process.env.TODO_APP_URL || 'http://localhost:3300';
-const API_TOKEN = process.env.API_TOKEN;
-const USER_ID = process.env.USER_ID || '1';
-
-// API helper
-async function apiRequest(endpoint: string, options: any = {}) {
-  const response = await fetch(`${API_URL}${endpoint}`, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${API_TOKEN}`,
-      ...options.headers
-    }
-  });
-
-  if (!response.ok) {
-    throw new Error(`API error: ${response.statusText}`);
-  }
-
-  return response.json();
-}
-
-// MCP Server setup
-const server = new Server(
-  {
-    name: 'todo-app-server',
-    version: '1.0.0',
-  },
-  {
-    capabilities: {
-      tools: {},
-    },
-  }
-);
-
-// List tools
-server.setRequestHandler(ListToolsRequestSchema, async () => {
-  return {
-    tools: [
-      {
-        name: 'list_projects',
-        description: 'List all projects',
-        inputSchema: { type: 'object', properties: {} }
-      },
-      {
-        name: 'create_task',
-        description: 'Create a task/bug/feature/idea',
-        inputSchema: {
-          type: 'object',
-          required: ['sectionId', 'title'],
-          properties: {
-            sectionId: { type: 'number' },
-            title: { type: 'string' },
-            description: { type: 'string' },
-            type: { type: 'string', enum: ['task', 'bug', 'feature', 'idea'] }
-          }
-        }
-      },
-      {
-        name: 'get_bugs',
-        description: 'Get all bugs for a project',
-        inputSchema: {
-          type: 'object',
-          required: ['projectId'],
-          properties: {
-            projectId: { type: 'number' }
-          }
-        }
-      }
-      // ... more tools
-    ]
-  };
-});
-
-// Handle tool calls
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  const { name, arguments: args } = request.params;
-
-  switch (name) {
-    case 'list_projects':
-      const projects = await apiRequest(`/api/users/${USER_ID}/projects`);
-      return {
-        content: [{
-          type: 'text',
-          text: JSON.stringify(projects, null, 2)
-        }]
-      };
-
-    case 'create_task':
-      const task = await apiRequest('/api/tasks', {
-        method: 'POST',
-        body: JSON.stringify({
-          sectionId: args.sectionId,
-          title: args.title,
-          description: args.description || '',
-          type: args.type || 'task'
-        })
-      });
-      return {
-        content: [{
-          type: 'text',
-          text: `Created task: ${task.title} (ID: ${task.id})`
-        }]
-      };
-
-    case 'get_bugs':
-      const bugs = await apiRequest(`/api/projects/${args.projectId}/bugs?userId=${USER_ID}`);
-      return {
-        content: [{
-          type: 'text',
-          text: JSON.stringify(bugs, null, 2)
-        }]
-      };
-
-    default:
-      throw new Error(`Unknown tool: ${name}`);
-  }
-});
-
-// Start server
-async function main() {
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-  console.error('Todo-App MCP server running on stdio');
-}
-
-main().catch(console.error);
-```
-
-#### 4.5 Claude Desktop Configuration
-
-**Location:** `~/Library/Application Support/Claude/claude_desktop_config.json`
-
-**Add to mcpServers:**
-```json
-{
-  "mcpServers": {
-    "todo-app": {
-      "command": "node",
-      "args": ["/path/to/todo-app/mcp-server/dist/index.js"],
-      "env": {
-        "TODO_APP_URL": "http://todo.hamishgilbert.test:8080",
-        "API_TOKEN": "your-generated-token-here",
-        "USER_ID": "1"
-      }
-    }
-  }
-}
-```
-
----
-
 ## 📦 DEPLOYMENT STATUS
 
 ### Current Deployment (Local Docker)
@@ -951,7 +610,7 @@ curl -X DELETE http://localhost:3300/api/tasks/5/labels/1
 curl -X POST http://localhost:3300/api/users/1/tokens \
   -H "Content-Type: application/json" \
   -d '{
-    "name": "Claude Code MCP",
+    "name": "API Access",
     "scopes": "read,write",
     "expiresInDays": 365
   }'
@@ -974,34 +633,20 @@ curl -X POST http://localhost:3300/api/users/1/tokens \
 | **3.3** | TaskItem Badges | ⏳ 0% | 30 min |
 | **3.4** | LabelManagerModal | ⏳ 0% | 45 min |
 | **3.5** | Sidebar Label Loading | ⏳ 0% | 15 min |
-| **4** | MCP Server | ⏳ 0% | 2 hours |
 
-**Overall: 70% Complete**
+**Overall: 80% Complete**
 
 ---
 
 ## 🚀 NEXT SESSION PRIORITIES
 
-### Option A: Complete Visual Polish (Recommended for UX)
+### Complete Visual Polish
 1. Add badges to TaskItem (30 min)
 2. Create LabelManagerModal (45 min)
 3. Update Sidebar (15 min)
 4. Test full workflow end-to-end
 
 **Deliverable:** Fully functional UI with all features visible
-
-### Option B: Build MCP Server First (Recommended for Claude Integration)
-1. Setup MCP server package (30 min)
-2. Implement 10-12 core tools (1.5 hours)
-3. Test with Claude Code
-4. Return to UI polish later
-
-**Deliverable:** Claude Code can manage your tasks immediately
-
-### Option C: Hybrid Approach
-1. Add TaskItem badges only (30 min) - makes types visible
-2. Skip LabelManagerModal for now (use API)
-3. Build MCP server (2 hours)
 
 ---
 
@@ -1019,7 +664,6 @@ curl -X POST http://localhost:3300/api/users/1/tokens \
 
 **Not Yet Created:**
 - `/frontend/src/components/LabelManagerModal.vue`
-- `/mcp-server/` directory and all contents
 
 ---
 
@@ -1030,11 +674,9 @@ curl -X POST http://localhost:3300/api/users/1/tokens \
 | Task type classification (bug/feature/idea) | ✅ Backend + Frontend |
 | 2-level task nesting (subtasks) | ✅ Backend + Frontend |
 | Flexible labeling system | ✅ Backend, ⚠️  No creation UI |
-| Programmatic API access | ✅ Backend ready, ⏳ MCP pending |
 | Document upload support | ✅ Complete |
 | User→Projects→Sections→Tasks→Subtasks | ✅ Complete |
 | Photo/file upload for bugs | ✅ Enhanced (10+ types) |
-| Claude Code integration | ⏳ Pending MCP server |
 
 ---
 
