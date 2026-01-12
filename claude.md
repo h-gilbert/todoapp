@@ -1,7 +1,7 @@
 # Todo App
 
 ## Project Overview
-Full-featured todo application with Vue 3 frontend, Node.js/Express backend, iOS mobile app, and MCP server integration for Claude Code.
+Full-featured todo application with Vue 3 frontend, Node.js/Express backend, and iOS mobile app.
 
 ## Tech Stack
 - **Frontend**: Vue 3, Vite, Pinia, Vue Router
@@ -63,16 +63,10 @@ todo-app/
 ├── backend/           # Express API
 │   └── data/          # SQLite database
 ├── iOS/               # Swift mobile app
-├── mcp-server/        # Claude Code integration
 ├── docker-compose.yml
 ├── docker-compose.production.yml
 └── nginx.conf
 ```
-
-## MCP Server Integration
-The MCP server allows Claude Code to interact with todos:
-- Production URL: https://todo.hamishgilbert.com
-- Local URL: http://localhost:3500
 
 ## Notes
 - Uses SQLite for simplicity (no external database service needed)
