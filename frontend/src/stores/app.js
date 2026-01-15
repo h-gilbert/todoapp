@@ -5,8 +5,7 @@ const API_URL = '/api'
 
 export const useAppStore = defineStore('app', () => {
   const user = ref(null)
-  const accessToken = ref(null)
-  const refreshToken = ref(null)
+  const csrfToken = ref(null)
   const projects = ref([])
   const currentProject = ref(null)
   const sections = ref([])
@@ -16,32 +15,44 @@ export const useAppStore = defineStore('app', () => {
   const taskLabels = ref({}) // taskId -> [labels]
   const subtasks = ref({}) // parentTaskId -> [subtasks]
 
-  // Initialize from localStorage on store creation
+  // Initialize user from localStorage on store creation (cookies handle tokens)
   const savedUser = localStorage.getItem('todo_user')
-  const savedAccessToken = localStorage.getItem('todo_access_token')
-  const savedRefreshToken = localStorage.getItem('todo_refresh_token')
-  if (savedUser && savedAccessToken) {
+  if (savedUser) {
     try {
       user.value = JSON.parse(savedUser)
-      accessToken.value = savedAccessToken
-      refreshToken.value = savedRefreshToken
     } catch (e) {
       console.error('Failed to parse saved user', e)
       localStorage.removeItem('todo_user')
-      localStorage.removeItem('todo_access_token')
-      localStorage.removeItem('todo_refresh_token')
     }
   }
 
+  // Fetch CSRF token from server
+  async function fetchCsrfToken() {
+    try {
+      const response = await fetch(`${API_URL}/csrf-token`, {
+        credentials: 'include'
+      })
+      if (response.ok) {
+        const data = await response.json()
+        csrfToken.value = data.csrfToken
+      }
+    } catch (e) {
+      console.error('Failed to fetch CSRF token', e)
+    }
+  }
+
+  // Initialize CSRF token
+  fetchCsrfToken()
+
   // Helper function to make authenticated requests
   async function authFetch(url, options = {}) {
-    if (!accessToken.value) {
-      throw new Error('Not authenticated')
+    const headers = {
+      ...options.headers
     }
 
-    const headers = {
-      ...options.headers,
-      'Authorization': `Bearer ${accessToken.value}`
+    // Add CSRF token for state-changing requests
+    if (csrfToken.value && ['POST', 'PUT', 'DELETE', 'PATCH'].includes(options.method?.toUpperCase())) {
+      headers['X-CSRF-Token'] = csrfToken.value
     }
 
     // Don't set Content-Type for FormData (file uploads)
@@ -49,7 +60,11 @@ export const useAppStore = defineStore('app', () => {
       headers['Content-Type'] = headers['Content-Type'] || 'application/json'
     }
 
-    let response = await fetch(url, { ...options, headers })
+    let response = await fetch(url, {
+      ...options,
+      headers,
+      credentials: 'include' // Send cookies automatically
+    })
 
     // Handle rate limiting
     if (response.status === 429) {
@@ -61,8 +76,11 @@ export const useAppStore = defineStore('app', () => {
     if (response.status === 401 || response.status === 403) {
       const refreshed = await tryRefreshToken()
       if (refreshed) {
-        headers['Authorization'] = `Bearer ${accessToken.value}`
-        response = await fetch(url, { ...options, headers })
+        response = await fetch(url, {
+          ...options,
+          headers,
+          credentials: 'include'
+        })
       } else {
         // Refresh failed, logout user
         logout()
@@ -75,20 +93,17 @@ export const useAppStore = defineStore('app', () => {
 
   // Try to refresh the access token
   async function tryRefreshToken() {
-    if (!refreshToken.value) return false
-
     try {
       const response = await fetch(`${API_URL}/users/refresh-token`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ refreshToken: refreshToken.value })
+        credentials: 'include' // Cookie will be sent automatically
       })
 
       if (!response.ok) return false
 
-      const data = await response.json()
-      accessToken.value = data.accessToken
-      localStorage.setItem('todo_access_token', data.accessToken)
+      // Refresh CSRF token after getting new access token
+      await fetchCsrfToken()
       return true
     } catch (error) {
       console.error('Token refresh failed:', error)
@@ -101,6 +116,7 @@ export const useAppStore = defineStore('app', () => {
     const response = await fetch(`${API_URL}/users/register`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
       body: JSON.stringify({ username, password })
     })
 
@@ -111,13 +127,12 @@ export const useAppStore = defineStore('app', () => {
 
     const data = await response.json()
     user.value = data.user
-    accessToken.value = data.accessToken
-    refreshToken.value = data.refreshToken
 
-    // Save to localStorage for persistence
+    // Save only user info to localStorage (cookies handle tokens)
     localStorage.setItem('todo_user', JSON.stringify(user.value))
-    localStorage.setItem('todo_access_token', data.accessToken)
-    localStorage.setItem('todo_refresh_token', data.refreshToken)
+
+    // Fetch CSRF token for subsequent requests
+    await fetchCsrfToken()
 
     await loadProjects()
     return user.value
@@ -127,6 +142,7 @@ export const useAppStore = defineStore('app', () => {
     const response = await fetch(`${API_URL}/users/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
       body: JSON.stringify({ username, password })
     })
 
@@ -137,13 +153,12 @@ export const useAppStore = defineStore('app', () => {
 
     const data = await response.json()
     user.value = data.user
-    accessToken.value = data.accessToken
-    refreshToken.value = data.refreshToken
 
-    // Save to localStorage for persistence
+    // Save only user info to localStorage (cookies handle tokens)
     localStorage.setItem('todo_user', JSON.stringify(user.value))
-    localStorage.setItem('todo_access_token', data.accessToken)
-    localStorage.setItem('todo_refresh_token', data.refreshToken)
+
+    // Fetch CSRF token for subsequent requests
+    await fetchCsrfToken()
 
     await loadProjects()
     return user.value
@@ -167,28 +182,27 @@ export const useAppStore = defineStore('app', () => {
   }
 
   async function logout() {
-    // Notify server to invalidate refresh token
-    if (refreshToken.value) {
-      try {
-        await authFetch(`${API_URL}/users/logout`, {
-          method: 'POST',
-          body: JSON.stringify({ refreshToken: refreshToken.value })
-        })
-      } catch (e) {
-        // Ignore errors during logout
-      }
+    // Notify server to invalidate refresh token and clear cookies
+    try {
+      await fetch(`${API_URL}/users/logout`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-CSRF-Token': csrfToken.value || ''
+        },
+        credentials: 'include'
+      })
+    } catch (e) {
+      // Ignore errors during logout
     }
 
     user.value = null
-    accessToken.value = null
-    refreshToken.value = null
+    csrfToken.value = null
     projects.value = []
     currentProject.value = null
     sections.value = []
     tasks.value = {}
     localStorage.removeItem('todo_user')
-    localStorage.removeItem('todo_access_token')
-    localStorage.removeItem('todo_refresh_token')
     localStorage.removeItem('todo_current_project_id')
   }
 

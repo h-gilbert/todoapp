@@ -2,6 +2,7 @@
 const express = require('express');
 const cors = require('cors');
 const bodyParser = require('body-parser');
+const cookieParser = require('cookie-parser');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
@@ -10,12 +11,20 @@ const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const rateLimit = require('express-rate-limit');
 const helmet = require('helmet');
+const { doubleCsrf } = require('csrf-csrf');
 const db = require('./database');
 
 const app = express();
 const PORT = process.env.PORT || 3500;
 
 // JWT Configuration
+if (!process.env.JWT_SECRET && process.env.NODE_ENV === 'production') {
+  console.error('FATAL: JWT_SECRET environment variable is required in production');
+  process.exit(1);
+}
+if (!process.env.JWT_SECRET) {
+  console.warn('WARNING: JWT_SECRET not set. Using random secret (tokens will be invalid after restart)');
+}
 const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(64).toString('hex');
 const JWT_EXPIRY = '7d';
 
@@ -69,6 +78,21 @@ app.use(cors({
 }));
 
 app.use(bodyParser.json());
+app.use(cookieParser());
+
+// CSRF Protection using Double-Submit Cookie pattern
+const isProduction = process.env.NODE_ENV === 'production';
+const { doubleCsrfProtection, generateToken } = doubleCsrf({
+  getSecret: () => process.env.CSRF_SECRET || JWT_SECRET,
+  cookieName: isProduction ? '__Host-csrf' : 'csrf',
+  cookieOptions: {
+    httpOnly: true,
+    sameSite: 'strict',
+    secure: isProduction,
+    path: '/'
+  },
+  getTokenFromRequest: (req) => req.headers['x-csrf-token']
+});
 
 // Rate limiting
 const generalLimiter = rateLimit({
@@ -89,6 +113,42 @@ const authLimiter = rateLimit({
 
 // Apply general rate limiting to all API routes
 app.use('/api', generalLimiter);
+
+// CSRF token endpoint - returns token for frontend to use in X-CSRF-Token header
+app.get('/api/csrf-token', (req, res) => {
+  try {
+    const token = generateToken(req, res);
+    res.json({ csrfToken: token });
+  } catch (error) {
+    console.error('CSRF token generation error:', error);
+    res.status(500).json({ error: 'Failed to generate CSRF token' });
+  }
+});
+
+// Apply CSRF protection to state-changing routes (excludes auth endpoints for initial login)
+// CSRF protection is applied selectively to avoid blocking mobile app requests that use Bearer tokens
+const csrfProtectedRoutes = [
+  '/api/projects',
+  '/api/sections',
+  '/api/tasks',
+  '/api/labels',
+  '/api/tokens'
+];
+
+// Apply CSRF protection only when request comes from cookie-based auth (web clients)
+const conditionalCsrf = (req, res, next) => {
+  // Skip CSRF for requests using Authorization header (mobile/API clients)
+  const authHeader = req.headers['authorization'];
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    return next();
+  }
+  // Apply CSRF protection for cookie-based auth
+  return doubleCsrfProtection(req, res, next);
+};
+
+csrfProtectedRoutes.forEach(route => {
+  app.use(route, conditionalCsrf);
+});
 
 // Note: Static file serving removed for security - use /api/files/:filename endpoint instead
 
@@ -163,12 +223,36 @@ const generateApiToken = () => {
   return crypto.randomBytes(32).toString('hex');
 };
 
+// Password validation helper
+const validatePassword = (password) => {
+  const errors = [];
+
+  if (password.length < 8) {
+    errors.push('Password must be at least 8 characters');
+  }
+  if (!/[A-Z]/.test(password)) {
+    errors.push('Password must contain at least one uppercase letter');
+  }
+  if (!/[a-z]/.test(password)) {
+    errors.push('Password must contain at least one lowercase letter');
+  }
+  if (!/[0-9]/.test(password)) {
+    errors.push('Password must contain at least one number');
+  }
+
+  return errors;
+};
+
 // ============ MIDDLEWARE ============
 
 // Bearer token authentication middleware - REQUIRES valid token
+// Supports both httpOnly cookies (web) and Authorization header (mobile/API)
 const authenticateToken = async (req, res, next) => {
+  // Try cookie first, then Authorization header
+  const cookieToken = req.cookies?.accessToken;
   const authHeader = req.headers['authorization'];
-  const token = authHeader && authHeader.split(' ')[1]; // Bearer TOKEN
+  const headerToken = authHeader && authHeader.split(' ')[1]; // Bearer TOKEN
+  const token = cookieToken || headerToken;
 
   if (!token) {
     return res.status(401).json({ error: 'Authentication required' });
@@ -377,9 +461,13 @@ app.post('/api/users/register', authLimiter, async (req, res) => {
       return res.status(400).json({ error: 'Username and password are required' });
     }
 
-    // Validate password length
-    if (password.length < 6) {
-      return res.status(400).json({ error: 'Password must be at least 6 characters' });
+    // Validate password strength
+    const passwordErrors = validatePassword(password);
+    if (passwordErrors.length > 0) {
+      return res.status(400).json({
+        error: 'Password does not meet requirements',
+        details: passwordErrors
+      });
     }
 
     // Check if username already exists
@@ -408,6 +496,23 @@ app.post('/api/users/register', authLimiter, async (req, res) => {
       'INSERT INTO refresh_tokens (user_id, token, expires_at) VALUES (?, ?, ?)',
       [user.id, refreshToken, expiresAt]
     );
+
+    // Set httpOnly cookies for web clients
+    res.cookie('accessToken', accessToken, {
+      httpOnly: true,
+      secure: isProduction,
+      sameSite: 'strict',
+      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+      path: '/'
+    });
+
+    res.cookie('refreshToken', refreshToken, {
+      httpOnly: true,
+      secure: isProduction,
+      sameSite: 'strict',
+      maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
+      path: '/api/users' // Only sent to auth endpoints
+    });
 
     res.json({
       user,
@@ -460,7 +565,24 @@ app.post('/api/users/login', authLimiter, async (req, res) => {
       [user.id, refreshToken, expiresAt]
     );
 
-    // Return user without password_hash, plus tokens
+    // Set httpOnly cookies for web clients
+    res.cookie('accessToken', accessToken, {
+      httpOnly: true,
+      secure: isProduction,
+      sameSite: 'strict',
+      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+      path: '/'
+    });
+
+    res.cookie('refreshToken', refreshToken, {
+      httpOnly: true,
+      secure: isProduction,
+      sameSite: 'strict',
+      maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
+      path: '/api/users' // Only sent to auth endpoints
+    });
+
+    // Return user without password_hash, plus tokens (for mobile app compatibility)
     const { password_hash, ...userWithoutPassword } = user;
     res.json({
       user: userWithoutPassword,
@@ -476,7 +598,8 @@ app.post('/api/users/login', authLimiter, async (req, res) => {
 // Refresh access token
 app.post('/api/users/refresh-token', async (req, res) => {
   try {
-    const { refreshToken } = req.body;
+    // Accept refresh token from cookie or body
+    const refreshToken = req.cookies?.refreshToken || req.body.refreshToken;
 
     if (!refreshToken) {
       return res.status(400).json({ error: 'Refresh token is required' });
@@ -495,6 +618,15 @@ app.post('/api/users/refresh-token', async (req, res) => {
     // Generate new access token
     const accessToken = jwt.sign({ userId: tokenRecord.user_id }, JWT_SECRET, { expiresIn: JWT_EXPIRY });
 
+    // Set new access token cookie for web clients
+    res.cookie('accessToken', accessToken, {
+      httpOnly: true,
+      secure: isProduction,
+      sameSite: 'strict',
+      maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+      path: '/'
+    });
+
     res.json({ accessToken });
   } catch (error) {
     console.error('Refresh token error:', error);
@@ -505,12 +637,17 @@ app.post('/api/users/refresh-token', async (req, res) => {
 // Logout user
 app.post('/api/users/logout', authenticateToken, async (req, res) => {
   try {
-    const { refreshToken } = req.body;
+    // Accept refresh token from cookie or body
+    const refreshToken = req.cookies?.refreshToken || req.body.refreshToken;
 
     if (refreshToken) {
       // Delete the refresh token
       await dbRun('DELETE FROM refresh_tokens WHERE token = ?', [refreshToken]);
     }
+
+    // Clear cookies
+    res.clearCookie('accessToken', { path: '/' });
+    res.clearCookie('refreshToken', { path: '/api/users' });
 
     res.json({ success: true });
   } catch (error) {
@@ -529,9 +666,13 @@ app.post('/api/users/change-password', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Current password and new password are required' });
     }
 
-    // Validate new password length
-    if (newPassword.length < 6) {
-      return res.status(400).json({ error: 'New password must be at least 6 characters' });
+    // Validate new password strength
+    const passwordErrors = validatePassword(newPassword);
+    if (passwordErrors.length > 0) {
+      return res.status(400).json({
+        error: 'New password does not meet requirements',
+        details: passwordErrors
+      });
     }
 
     // Get user
@@ -997,10 +1138,34 @@ app.delete('/api/projects/:id', authenticateToken, checkProjectAccess, async (re
 // Reorder projects
 app.post('/api/projects/reorder', authenticateToken, async (req, res) => {
   try {
+    const userId = req.userId;
     const { projectIds } = req.body;
 
+    if (!projectIds || !Array.isArray(projectIds) || projectIds.length === 0) {
+      return res.status(400).json({ error: 'projectIds array is required' });
+    }
+
+    // Verify all projects belong to the user (owned or shared)
+    for (const projectId of projectIds) {
+      const owned = await dbGet(
+        'SELECT id FROM projects WHERE id = ? AND user_id = ?',
+        [projectId, userId]
+      );
+      const shared = !owned && await dbGet(
+        'SELECT id FROM project_shares WHERE project_id = ? AND user_id = ?',
+        [projectId, userId]
+      );
+      if (!owned && !shared) {
+        return res.status(403).json({ error: 'Access denied to one or more projects' });
+      }
+    }
+
+    // Only reorder projects the user owns
     for (let i = 0; i < projectIds.length; i++) {
-      await dbRun('UPDATE projects SET order_index = ? WHERE id = ?', [i, projectIds[i]]);
+      await dbRun(
+        'UPDATE projects SET order_index = ? WHERE id = ? AND user_id = ?',
+        [i, projectIds[i], userId]
+      );
     }
 
     res.json({ success: true });
@@ -1276,7 +1441,32 @@ app.delete('/api/sections/:id', authenticateToken, checkSectionAccess, async (re
 // Reorder sections
 app.post('/api/sections/reorder', authenticateToken, async (req, res) => {
   try {
+    const userId = req.userId;
     const { sectionIds } = req.body;
+
+    if (!sectionIds || !Array.isArray(sectionIds) || sectionIds.length === 0) {
+      return res.status(400).json({ error: 'sectionIds array is required' });
+    }
+
+    // Verify all sections belong to projects the user has access to
+    for (const sectionId of sectionIds) {
+      const section = await dbGet('SELECT project_id FROM sections WHERE id = ?', [sectionId]);
+      if (!section) {
+        return res.status(404).json({ error: 'Section not found' });
+      }
+
+      const owned = await dbGet(
+        'SELECT id FROM projects WHERE id = ? AND user_id = ?',
+        [section.project_id, userId]
+      );
+      const shared = !owned && await dbGet(
+        'SELECT id FROM project_shares WHERE project_id = ? AND user_id = ?',
+        [section.project_id, userId]
+      );
+      if (!owned && !shared) {
+        return res.status(403).json({ error: 'Access denied to one or more sections' });
+      }
+    }
 
     for (let i = 0; i < sectionIds.length; i++) {
       await dbRun('UPDATE sections SET order_index = ? WHERE id = ?', [i, sectionIds[i]]);
@@ -1745,7 +1935,26 @@ app.delete('/api/tasks/:id', authenticateToken, checkTaskAccess, async (req, res
 app.post('/api/tasks/:id/move', authenticateToken, checkTaskAccess, async (req, res) => {
   try {
     const { id } = req.params;
+    const userId = req.userId;
     const { sectionId, targetIndex } = req.body;
+
+    // Validate target section exists and user has access
+    const targetSection = await dbGet('SELECT project_id FROM sections WHERE id = ?', [sectionId]);
+    if (!targetSection) {
+      return res.status(404).json({ error: 'Target section not found' });
+    }
+
+    const targetOwned = await dbGet(
+      'SELECT id FROM projects WHERE id = ? AND user_id = ?',
+      [targetSection.project_id, userId]
+    );
+    const targetShared = !targetOwned && await dbGet(
+      'SELECT id FROM project_shares WHERE project_id = ? AND user_id = ?',
+      [targetSection.project_id, userId]
+    );
+    if (!targetOwned && !targetShared) {
+      return res.status(403).json({ error: 'Access denied to target section' });
+    }
 
     // If targetIndex is provided, we need to reorder tasks
     if (targetIndex !== undefined) {
@@ -1794,7 +2003,38 @@ app.post('/api/tasks/:id/move', authenticateToken, checkTaskAccess, async (req, 
 // Reorder tasks
 app.post('/api/tasks/reorder', authenticateToken, async (req, res) => {
   try {
+    const userId = req.userId;
     const { taskIds } = req.body;
+
+    if (!taskIds || !Array.isArray(taskIds) || taskIds.length === 0) {
+      return res.status(400).json({ error: 'taskIds array is required' });
+    }
+
+    // Verify all tasks belong to projects the user has access to
+    for (const taskId of taskIds) {
+      const task = await dbGet(
+        `SELECT t.id, s.project_id
+         FROM tasks t
+         JOIN sections s ON t.section_id = s.id
+         WHERE t.id = ?`,
+        [taskId]
+      );
+      if (!task) {
+        return res.status(404).json({ error: 'Task not found' });
+      }
+
+      const owned = await dbGet(
+        'SELECT id FROM projects WHERE id = ? AND user_id = ?',
+        [task.project_id, userId]
+      );
+      const shared = !owned && await dbGet(
+        'SELECT id FROM project_shares WHERE project_id = ? AND user_id = ?',
+        [task.project_id, userId]
+      );
+      if (!owned && !shared) {
+        return res.status(403).json({ error: 'Access denied to one or more tasks' });
+      }
+    }
 
     for (let i = 0; i < taskIds.length; i++) {
       await dbRun('UPDATE tasks SET order_index = ? WHERE id = ?', [i, taskIds[i]]);
