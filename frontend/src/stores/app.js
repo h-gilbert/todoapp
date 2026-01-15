@@ -384,10 +384,10 @@ export const useAppStore = defineStore('app', () => {
 
     // Update project task count locally
     if (currentProject.value && archivedTaskCount > 0) {
-      currentProject.value.task_count = Math.max((currentProject.value.task_count || 0) - archivedTaskCount, 0)
+      currentProject.value.taskCount = Math.max((currentProject.value.taskCount || 0) - archivedTaskCount, 0)
       const projectIndex = projects.value.findIndex(p => p.id === currentProject.value.id)
       if (projectIndex !== -1) {
-        projects.value[projectIndex].task_count = currentProject.value.task_count
+        projects.value[projectIndex].taskCount = currentProject.value.taskCount
       }
     }
   }
@@ -408,10 +408,10 @@ export const useAppStore = defineStore('app', () => {
     // Update project task count locally
     const unarchivedTaskCount = tasks.value[section.id]?.length || 0
     if (currentProject.value && unarchivedTaskCount > 0) {
-      currentProject.value.task_count = (currentProject.value.task_count || 0) + unarchivedTaskCount
+      currentProject.value.taskCount = (currentProject.value.taskCount || 0) + unarchivedTaskCount
       const projectIndex = projects.value.findIndex(p => p.id === currentProject.value.id)
       if (projectIndex !== -1) {
-        projects.value[projectIndex].task_count = currentProject.value.task_count
+        projects.value[projectIndex].taskCount = currentProject.value.taskCount
       }
     }
 
@@ -444,12 +444,12 @@ export const useAppStore = defineStore('app', () => {
       tasks.value[sectionId].push(task)
     }
 
-    // Update project task count locally
-    if (currentProject.value) {
-      currentProject.value.task_count = (currentProject.value.task_count || 0) + 1
+    // Update project task count locally (only for non-subtasks)
+    if (!parent_task_id && currentProject.value) {
+      currentProject.value.taskCount = (currentProject.value.taskCount || 0) + 1
       const projectIndex = projects.value.findIndex(p => p.id === currentProject.value.id)
       if (projectIndex !== -1) {
-        projects.value[projectIndex].task_count = currentProject.value.task_count
+        projects.value[projectIndex].taskCount = currentProject.value.taskCount
       }
     }
     return task
@@ -496,10 +496,10 @@ export const useAppStore = defineStore('app', () => {
 
     // Update project task count locally
     if (currentProject.value) {
-      currentProject.value.task_count = Math.max((currentProject.value.task_count || 0) - 1, 0)
+      currentProject.value.taskCount = Math.max((currentProject.value.taskCount || 0) - 1, 0)
       const projectIndex = projects.value.findIndex(p => p.id === currentProject.value.id)
       if (projectIndex !== -1) {
-        projects.value[projectIndex].task_count = currentProject.value.task_count
+        projects.value[projectIndex].taskCount = currentProject.value.taskCount
       }
     }
   }
@@ -514,10 +514,10 @@ export const useAppStore = defineStore('app', () => {
 
     // Update project task count locally
     if (currentProject.value) {
-      currentProject.value.task_count = Math.max((currentProject.value.task_count || 0) - 1, 0)
+      currentProject.value.taskCount = Math.max((currentProject.value.taskCount || 0) - 1, 0)
       const projectIndex = projects.value.findIndex(p => p.id === currentProject.value.id)
       if (projectIndex !== -1) {
-        projects.value[projectIndex].task_count = currentProject.value.task_count
+        projects.value[projectIndex].taskCount = currentProject.value.taskCount
       }
     }
   }
@@ -625,10 +625,10 @@ export const useAppStore = defineStore('app', () => {
 
     // Update project task count locally
     if (currentProject.value) {
-      currentProject.value.task_count = (currentProject.value.task_count || 0) + 1
+      currentProject.value.taskCount = (currentProject.value.taskCount || 0) + 1
       const projectIndex = projects.value.findIndex(p => p.id === currentProject.value.id)
       if (projectIndex !== -1) {
-        projects.value[projectIndex].task_count = currentProject.value.task_count
+        projects.value[projectIndex].taskCount = currentProject.value.taskCount
       }
     }
 
