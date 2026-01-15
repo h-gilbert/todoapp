@@ -68,12 +68,16 @@ const upload = multer({
 app.use(helmet());
 
 // CORS configuration - restrict to allowed origins
+const allowedOrigins = [
+  'http://localhost:5176',
+  'http://localhost:3001'
+];
+// Add production origin from environment variable
+if (process.env.CORS_ORIGIN) {
+  allowedOrigins.push(process.env.CORS_ORIGIN);
+}
 app.use(cors({
-  origin: [
-    'http://localhost:5176',
-    'http://localhost:3001',
-    'https://todo.hamishgilbert.com'
-  ],
+  origin: allowedOrigins,
   credentials: true
 }));
 

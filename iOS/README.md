@@ -23,11 +23,11 @@ cd ../backend
 npm start
 ```
 
-The backend should be running on `http://localhost:3000`
+The backend should be running on `http://localhost:3500`
 
 ### 2. iOS App Configuration
 
-The iOS app is configured to connect to `http://localhost:3000` by default. This works for the iOS Simulator.
+The iOS app is configured to connect to `http://localhost:3500` by default. This works for the iOS Simulator.
 
 **For testing on a physical device:**
 
@@ -37,9 +37,9 @@ The iOS app is configured to connect to `http://localhost:3000` by default. This
 
 2. Update the API base URL in `APIService.swift`:
    ```swift
-   private let baseURL = "http://YOUR_LOCAL_IP:3000/api"
+   private let baseURL = "http://YOUR_LOCAL_IP:3500/api"
    ```
-   For example: `http://192.168.1.100:3000/api`
+   For example: `http://192.168.1.100:3500/api`
 
 ### 3. App Transport Security
 

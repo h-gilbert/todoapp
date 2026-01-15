@@ -1,37 +1,38 @@
 # Todo App Deployment Guide
 
-This guide will help you deploy the Todo App to your Unraid server at `todo.hamishgilbert.com`.
+This guide covers deploying the Todo App to a production server with Docker.
 
 ## Prerequisites
 
 1. **GitHub Repository**: Your code must be in a GitHub repository
-2. **SSH Access**: SSH access to your Unraid server (100.97.149.13)
+2. **SSH Access**: SSH access to your server
 3. **Existing Infrastructure**:
-   - `multi-site-nginx` container running
-   - SSL certificate for hamishgilbert.com
+   - Docker and Docker Compose installed
+   - Nginx (or similar reverse proxy) for SSL termination
+   - SSL certificate for your domain
 
 ## Architecture
 
 ```
 GitHub (Push to main)
-    ↓
+    |
 GitHub Actions (Build & Deploy)
-    ↓
-Unraid Server (100.97.149.13)
-    ↓
-┌─────────────────────────────────────┐
-│  multi-site-nginx (Port 9080/9443) │
-│  - Routes todo.hamishgilbert.com    │
-│  - Serves frontend static files     │
-│  - Proxies /api to backend          │
-└─────────────────────────────────────┘
-              ↓ /api
-┌─────────────────────────────────────┐
-│  todo-app-backend (Port 3500)       │
-│  - Node.js/Express API              │
-│  - SQLite database                  │
-│  - File uploads                     │
-└─────────────────────────────────────┘
+    |
+Your Server
+    |
++-------------------------------------+
+|  nginx (reverse proxy)              |
+|  - Routes your-domain.com           |
+|  - Serves frontend static files     |
+|  - Proxies /api to backend          |
++-------------------------------------+
+              | /api
++-------------------------------------+
+|  todo-app-backend (Port 3500)       |
+|  - Node.js/Express API              |
+|  - SQLite database                  |
+|  - File uploads                     |
++-------------------------------------+
 ```
 
 ## Step-by-Step Setup
@@ -41,90 +42,50 @@ Unraid Server (100.97.149.13)
 SSH into your server and create the necessary directories:
 
 ```bash
-ssh root@100.97.149.13
+ssh user@your-server-ip
 
 # Create todo app directories
-mkdir -p /mnt/user/appdata/todo-app/backend/uploads
-mkdir -p /mnt/user/appdata/todo-app/frontend/dist
+mkdir -p /path/to/appdata/todo-app/backend/uploads
+mkdir -p /path/to/appdata/todo-app/frontend/dist
 
 # Set proper permissions
-chown -R root:root /mnt/user/appdata/todo-app
+chown -R root:root /path/to/appdata/todo-app
 ```
 
-### 2. Update SSL Certificate
+### 2. SSL Certificate Setup
 
-Your existing SSL certificate needs to include `todo.hamishgilbert.com`.
+Your SSL certificate needs to include your todo app subdomain.
 
-Check current certificate domains:
+Using Let's Encrypt:
 ```bash
-docker exec multi-site-nginx cat /etc/nginx/ssl/renewal/hamishgilbert.com.conf
-```
-
-If `todo.hamishgilbert.com` is not listed, you need to renew your certificate:
-
-```bash
-# Install certbot in the container (if not already installed)
-docker exec -it multi-site-nginx sh
-apk add --no-cache certbot
-
-# Renew certificate with new subdomain
 certbot certonly --webroot \
-  -w /usr/share/nginx/letsencrypt-webroot \
-  -d hamishgilbert.com \
-  -d www.hamishgilbert.com \
-  -d mealplanner.hamishgilbert.com \
-  -d todo.hamishgilbert.com \
+  -w /var/www/letsencrypt \
+  -d yourdomain.com \
+  -d todo.yourdomain.com \
   --non-interactive \
   --agree-tos \
   --email your-email@example.com
-
-# Exit container
-exit
-
-# Restart nginx to load new certificate
-docker restart multi-site-nginx
 ```
 
-### 3. Update multi-site-nginx Docker Compose
+### 3. Nginx Configuration
 
-Edit `/mnt/user/appdata/multi-site-nginx/docker-compose.yml` and add the todo app volume:
+Add the todo app to your nginx configuration. See `nginx-config-todo.conf` for a template.
 
-```yaml
-services:
-  multi-site-nginx:
-    image: nginx:alpine
-    container_name: multi-site-nginx
-    restart: unless-stopped
-    ports:
-      - "9080:80"
-      - "9443:443"
-    volumes:
-      # Existing volumes...
-      - /mnt/user/appdata/multi-site-nginx/hamish-gilbert-website:/usr/share/nginx/personal-website:rw
-      - /mnt/user/appdata/meal-planning-webapp-subdomain/frontend/dist:/usr/share/nginx/mealplanner:rw
-      - /mnt/user/appdata/data-learning-site/html:/usr/share/nginx/datalearning:rw
-      - /mnt/user/appdata/data-project-site/html:/usr/share/nginx/dataproject:rw
-      - /mnt/user/appdata/calc-portfolio-site/html:/usr/share/nginx/calc:rw
+Key configuration points:
+- HTTP to HTTPS redirect
+- Proxy `/api/` to backend container
+- Serve frontend static files
+- SSL certificate paths
 
-      # ADD THIS LINE for todo app
-      - /mnt/user/appdata/todo-app/frontend/dist:/usr/share/nginx/todo-app:rw
-
-      # Existing config volumes...
-      - /mnt/user/appdata/multi-site-nginx/letsencrypt-webroot:/usr/share/nginx/letsencrypt-webroot:rw
-      - /mnt/user/appdata/multi-site-nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      - /mnt/user/appdata/multi-site-nginx/conf.d:/etc/nginx/conf.d:ro
-      - /mnt/user/appdata/multi-site-nginx/ssl:/etc/nginx/ssl:ro
-```
-
-After editing, restart the nginx container:
+After adding the configuration:
 ```bash
-cd /mnt/user/appdata/multi-site-nginx
-docker compose up -d
+nginx -t  # Test configuration
+systemctl reload nginx  # or docker restart nginx-container
 ```
 
 ### 4. Configure GitHub Secrets
 
-In your GitHub repository, go to **Settings → Secrets and variables → Actions** and add:
+In your GitHub repository, go to **Settings > Secrets and variables > Actions** and add:
 
 1. **SSH_PRIVATE_KEY**: Your SSH private key for accessing the server
    ```bash
@@ -135,19 +96,17 @@ In your GitHub repository, go to **Settings → Secrets and variables → Action
    cat ~/.ssh/github_actions_todo_app
 
    # Add public key to server
-   ssh-copy-id -i ~/.ssh/github_actions_todo_app.pub root@100.97.149.13
+   ssh-copy-id -i ~/.ssh/github_actions_todo_app.pub user@your-server-ip
    ```
 
-2. **SERVER_IP**: `100.97.149.13`
+2. **SERVER_IP**: Your server's IP address
 
-3. **SERVER_USER**: `root`
+3. **SERVER_USER**: SSH username (e.g., `root`)
 
 ### 5. Push Code to GitHub
 
-If you haven't already, initialize a git repository and push to GitHub:
-
 ```bash
-cd /Users/hamishgilbert/Downloads/Projects/todo-app
+cd /path/to/todo-app
 
 # Initialize git if not already done
 git init
@@ -159,7 +118,6 @@ git add .
 git commit -m "Initial commit with deployment configuration"
 
 # Create GitHub repository and push
-# (Follow GitHub's instructions to create a new repository)
 git remote add origin https://github.com/YOUR-USERNAME/todo-app.git
 git branch -M main
 git push -u origin main
@@ -185,7 +143,7 @@ The deployment will automatically run when you push to the `main` branch. You ca
 
 2. **Check backend health**:
    ```bash
-   curl http://192.168.1.2:3500/api/health
+   curl http://localhost:3500/api/health
    ```
 
 3. **View logs**:
@@ -193,56 +151,53 @@ The deployment will automatically run when you push to the `main` branch. You ca
    docker logs todo-app-backend
    ```
 
-4. **Access the app**: https://todo.hamishgilbert.com
+4. **Access the app**: https://todo.yourdomain.com
 
 ### Update DNS
 
-Make sure `todo.hamishgilbert.com` points to your server IP:
-- If using Cloudflare/DNS provider: Add an A record for `todo` pointing to `100.97.149.13`
-- If using Tailscale: The IP `100.97.149.13` should already be accessible
+Make sure your subdomain points to your server IP:
+- Add an A record for `todo` pointing to your server IP
 
 ## Troubleshooting
 
 ### Backend not starting
 ```bash
 docker logs todo-app-backend
-docker compose -f /mnt/user/appdata/todo-app/docker-compose.production.yml restart
+docker compose -f docker-compose.production.yml restart
 ```
 
 ### Frontend not loading
 ```bash
 # Check nginx config
-docker exec multi-site-nginx nginx -t
+nginx -t
 
 # Check nginx logs
-docker logs multi-site-nginx
+docker logs nginx-container  # or check /var/log/nginx/
 
 # Restart nginx
-docker restart multi-site-nginx
+systemctl reload nginx
 ```
 
 ### SSL certificate issues
 ```bash
 # Check certificate validity
-docker exec multi-site-nginx ls -la /etc/nginx/ssl/live/hamishgilbert.com/
+ls -la /path/to/ssl/certs/
 
 # View certificate details
-docker exec multi-site-nginx openssl x509 -in /etc/nginx/ssl/live/hamishgilbert.com/fullchain.pem -text -noout | grep DNS
+openssl x509 -in /path/to/fullchain.pem -text -noout | grep DNS
 ```
 
 ### 502 Bad Gateway
 - Backend is not running or crashed
 - Check backend logs: `docker logs todo-app-backend`
-- Verify backend is listening: `curl http://192.168.1.2:3500/api/health`
+- Verify backend is listening: `curl http://localhost:3500/api/health`
 
 ### Changes not appearing
 ```bash
 # Rebuild and redeploy
-cd /mnt/user/appdata/todo-app
 docker compose -f docker-compose.production.yml down
 docker compose -f docker-compose.production.yml build --no-cache
 docker compose -f docker-compose.production.yml up -d
-docker restart multi-site-nginx
 ```
 
 ## Manual Deployment (Alternative)
@@ -251,24 +206,20 @@ If GitHub Actions doesn't work, you can deploy manually:
 
 ```bash
 # On your local machine - build frontend
-cd /Users/hamishgilbert/Downloads/Projects/todo-app/frontend
+cd /path/to/todo-app/frontend
 npm run build
 
 # Copy files to server
-scp -r dist/* root@100.97.149.13:/mnt/user/appdata/todo-app/frontend/dist/
-scp -r ../backend/* root@100.97.149.13:/mnt/user/appdata/todo-app/backend/
-scp ../docker-compose.production.yml root@100.97.149.13:/mnt/user/appdata/todo-app/
-scp ../nginx-config-todo.conf root@100.97.149.13:/mnt/user/appdata/multi-site-nginx/conf.d/todo.conf
+scp -r dist/* user@server:/path/to/appdata/todo-app/frontend/dist/
+scp -r ../backend/* user@server:/path/to/appdata/todo-app/backend/
+scp ../docker-compose.production.yml user@server:/path/to/appdata/todo-app/
 
 # SSH into server
-ssh root@100.97.149.13
+ssh user@server
 
 # Deploy backend
-cd /mnt/user/appdata/todo-app
+cd /path/to/appdata/todo-app
 docker compose -f docker-compose.production.yml up -d --build
-
-# Restart nginx
-docker restart multi-site-nginx
 ```
 
 ## Maintenance
@@ -278,25 +229,24 @@ docker restart multi-site-nginx
 # Backend logs
 docker logs -f todo-app-backend
 
-# Nginx logs
-docker logs -f multi-site-nginx
+# Follow logs in real-time
+docker logs -f todo-app-backend 2>&1 | tail -100
 ```
 
 ### Backup Database
 ```bash
 # Copy database from container
-docker cp todo-app-backend:/app/todo.db /mnt/user/backups/todo-app-$(date +%Y%m%d).db
+docker cp todo-app-backend:/app/data/todos.db /path/to/backups/todo-app-$(date +%Y%m%d).db
 ```
 
 ### Update Application
-Simply push changes to the `main` branch on GitHub and the deployment will run automatically.
+Push changes to the `main` branch on GitHub and the deployment will run automatically.
 
-## Files Created
+## Files Reference
 
 - `.github/workflows/deploy.yml` - GitHub Actions workflow
-- `nginx-config-todo.conf` - Nginx configuration for todo subdomain
+- `nginx-config-todo.conf` - Nginx configuration template
 - `docker-compose.production.yml` - Production Docker setup for backend
-- `DEPLOYMENT.md` - This documentation file
 
 ## Support
 

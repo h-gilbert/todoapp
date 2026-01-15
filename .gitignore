@@ -46,3 +46,20 @@ temp/
 
 # Docker
 .dockerignore
+
+# Data exports (may contain personal data)
+export-data.json
+**/export-data.json
+
+# Temporary/personal files
+temp*/
+screenshots/
+*.png
+*.jpg
+*.jpeg
+
+# Claude Code instructions (local only)
+CLAUDE.md
+claude.md
+**/CLAUDE.md
+**/claude.md

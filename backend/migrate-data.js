@@ -4,9 +4,9 @@ const path = require('path');
 // Local database path
 const localDbPath = path.join(__dirname, 'data/todos.db');
 
-// Configuration - edit these
-const REAL_USERNAME = 'hamish'; // Your real username
-const EXCLUDED_PROJECT_NAME = 'store'; // Project to exclude (case-insensitive)
+// Configuration - edit these to match your setup
+const REAL_USERNAME = 'your-username'; // Your username to export
+const EXCLUDED_PROJECT_NAME = ''; // Project name to exclude (case-insensitive), leave empty to include all
 
 // Open local database
 const localDb = new sqlite3.Database(localDbPath, sqlite3.OPEN_READONLY);
@@ -30,7 +30,7 @@ const exportData = async () => {
           return;
         }
 
-        // Filter: Only include the real user (hamish)
+        // Filter: Only include the specified user
         const realUser = users.find(u => u.username.toLowerCase() === REAL_USERNAME.toLowerCase());
         if (!realUser) {
           reject(new Error(`User "${REAL_USERNAME}" not found in database`));
