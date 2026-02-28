@@ -1845,7 +1845,11 @@ app.post('/api/tasks/:id/archive', authenticateToken, checkTaskAccess, async (re
   try {
     const { id } = req.params;
     const userId = req.userId; // From authenticated token
-    await dbRun('UPDATE tasks SET archived = 1, archived_at = ?, archived_by_user_id = ? WHERE id = ?', [new Date().toISOString(), userId, id]);
+    const now = new Date().toISOString();
+    await dbRun('UPDATE tasks SET archived = 1, archived_at = ?, archived_by_user_id = ? WHERE id = ?', [now, userId, id]);
+
+    // Cascade: archive all sub-tasks of this task
+    await dbRun('UPDATE tasks SET archived = 1, archived_at = ?, archived_by_user_id = ? WHERE parent_task_id = ? AND archived = 0', [now, userId, id]);
 
     // Invalidate caches
     invalidateCache('tasks');

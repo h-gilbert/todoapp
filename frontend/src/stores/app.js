@@ -489,14 +489,17 @@ export const useAppStore = defineStore('app', () => {
       method: 'POST'
     })
 
-    // Remove from current tasks
+    // Remove parent and its sub-tasks from current tasks, counting total removed
+    let removedCount = 0
     for (const sectionId in tasks.value) {
-      tasks.value[sectionId] = tasks.value[sectionId].filter(t => t.id !== id)
+      const before = tasks.value[sectionId].length
+      tasks.value[sectionId] = tasks.value[sectionId].filter(t => t.id !== id && t.parent_task_id !== id)
+      removedCount += before - tasks.value[sectionId].length
     }
 
     // Update project task count locally
     if (currentProject.value) {
-      currentProject.value.taskCount = Math.max((currentProject.value.taskCount || 0) - 1, 0)
+      currentProject.value.taskCount = Math.max((currentProject.value.taskCount || 0) - removedCount, 0)
       const projectIndex = projects.value.findIndex(p => p.id === currentProject.value.id)
       if (projectIndex !== -1) {
         projects.value[projectIndex].taskCount = currentProject.value.taskCount
